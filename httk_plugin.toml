@@ -1,0 +1,4 @@
+[plugin]
+name = "workflows-vasp-atomate2"
+description = "atomate2's VASP Makers as httk workflows (static, relax, tight relax, double relax)"
+workflows = ["atomate2-static", "atomate2-relax", "atomate2-tight-relax", "atomate2-double-relax"]

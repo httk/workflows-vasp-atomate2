@@ -1,0 +1,45 @@
+{
+  "$id": "https://raw.githubusercontent.com/httk/workflows-vasp-atomate2/refs/tags/wf-decl-v0.1.0/atomate2-relax/declaration.json",
+  "title": "atomate2 VASP relaxation",
+  "description": "This workflow declaration defines the httk atomate2-relax workflow: it runs atomate2's RelaxMaker, one VASP relaxation of a structure's positions and cell. The protocol, the VASP input set and the custodian error handling are those of atomate2's RelaxMaker.\nIt defines the meaning of its roles: input role initial_structure is a structures entry containing the structure to relax.\nOutput role relaxed_structure is a structures entry containing the relaxed structure of the final calculation, output role total_energy is a records entry containing the total energy of the relaxed structure: the final ionic step's energy(sigma->0), in eV, output role band_gap is a records entry containing the band gap of the relaxed structure, in eV, and output role task_document is a files entry containing jobflow-outputs.json: the final atomate2 task document (an emmet TaskDoc) as JSON.",
+  "x-httk-definition": {
+    "kind": "workflow_declaration",
+    "format": "0.1",
+    "version": "0.1.0",
+    "name": "atomate2-relax",
+    "label": "atomate2_relax_workflow_httk"
+  },
+  "inputs": [
+    {
+      "name": "initial_structure",
+      "entry_type": "structures",
+      "ref": "https://schemas.optimade.org/defs/v1.3/entrytypes/optimade/structures",
+      "description": "The structure to relax."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "relaxed_structure",
+      "entry_type": "structures",
+      "ref": "https://schemas.optimade.org/defs/v1.3/entrytypes/optimade/structures",
+      "description": "The relaxed structure of the final calculation."
+    },
+    {
+      "name": "total_energy",
+      "entry_type": "records",
+      "ref": "https://schemas.httk.org/defs/v0.1/properties/core/total_energy",
+      "description": "The total energy of the relaxed structure: the final ionic step's energy(sigma->0), in eV."
+    },
+    {
+      "name": "band_gap",
+      "entry_type": "records",
+      "ref": "https://schemas.httk.org/defs/v0.1/properties/electronic/band_gap",
+      "description": "The band gap of the relaxed structure, in eV."
+    },
+    {
+      "name": "task_document",
+      "entry_type": "files",
+      "description": "jobflow-outputs.json: the final atomate2 task document (an emmet TaskDoc) as JSON."
+    }
+  ]
+}

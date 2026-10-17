@@ -1,0 +1,4 @@
+[tool.ruff]
+target-version = "py312"
+src = ["tests"]
+line-length = 120
