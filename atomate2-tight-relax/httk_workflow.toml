@@ -40,7 +40,7 @@ product_of = "relaxed_structure"
 entry_type = "files"
 role = "task_document"
 description = "jobflow-outputs.json: the final atomate2 task document (an emmet TaskDoc) as JSON."
-product_of = "relaxed_structure"
+product_of = "initial_structure"
 
 [workflow.collect]
 file = "collect.py"

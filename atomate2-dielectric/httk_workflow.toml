@@ -1,0 +1,67 @@
+[workflow]
+name = "atomate2.dielectric"
+description = "atomate2's DielectricMaker: one VASP density-functional perturbation theory (LEPSILON, IBRION = 8) calculation of the dielectric, Born effective charge and piezoelectric response of an insulator, with atomate2's input sets and custodian error handling"
+declaration_uri = "https://raw.githubusercontent.com/httk/workflows-vasp-atomate2/refs/tags/wf-decl-v0.1.0/atomate2-dielectric/declaration.json"
+declaration_file = "declaration.json"
+requires = ["httk-workflow>=2.1.1", "atomate2>=0.1.5"]
+
+[workflow.runner]
+format = "jobflow"
+maker = "atomate2.vasp.jobs.core:DielectricMaker"
+
+[workflow.inputs.structure]
+port = "structure"
+role = "initial_structure"
+entry_type = "structures"
+required = true
+
+[workflow.outputs.dielectric_cell]
+entry_type = "structures"
+role = "dielectric_cell"
+ref = "https://schemas.optimade.org/defs/v1.3/entrytypes/optimade/structures"
+description = "The cell the response refers to, in the task document's site order."
+product_of = "initial_structure"
+
+[workflow.outputs.static_relative_permittivity]
+entry_type = "records"
+role = "static_relative_permittivity"
+ref = "https://schemas.httk.org/defs/v0.1/properties/electronic/static_relative_permittivity"
+description = "The isotropic mean of the static (electronic plus ionic) relative permittivity tensor."
+product_of = "dielectric_cell"
+
+[workflow.outputs.high_frequency_relative_permittivity]
+entry_type = "records"
+role = "high_frequency_relative_permittivity"
+ref = "https://schemas.httk.org/defs/v0.1/properties/electronic/high_frequency_relative_permittivity"
+description = "The isotropic mean of the high-frequency (electronic, ion-clamped, with local-field effects) relative permittivity tensor."
+product_of = "dielectric_cell"
+
+[workflow.outputs.born_effective_charges]
+entry_type = "records"
+role = "born_effective_charges"
+ref = "https://schemas.httk.org/defs/v0.1/properties/electronic/born_effective_charges"
+description = "The Born effective charge tensors of the sites of the dielectric cell, as VASP prints them (row: field direction, column: displacement direction)."
+product_of = "dielectric_cell"
+
+[workflow.outputs.piezoelectric_tensor]
+entry_type = "records"
+role = "piezoelectric_tensor"
+ref = "https://schemas.httk.org/defs/v0.1/properties/mechanics/piezoelectric_tensor"
+description = "The relaxed-ion piezoelectric tensor (electronic plus ionic), in C/m^2, Voigt order xx yy zz yz xz xy."
+product_of = "dielectric_cell"
+
+[workflow.outputs.total_energy]
+entry_type = "records"
+role = "total_energy"
+ref = "https://schemas.httk.org/defs/v0.1/properties/core/total_energy"
+description = "The total energy of the structure: the final ionic step's energy(sigma->0), in eV."
+product_of = "initial_structure"
+
+[workflow.outputs.task_document]
+entry_type = "files"
+role = "task_document"
+description = "jobflow-outputs.json: the flow's final output (atomate2 task documents) as JSON."
+product_of = "initial_structure"
+
+[workflow.collect]
+file = "collect.py"

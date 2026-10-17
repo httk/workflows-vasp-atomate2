@@ -1,0 +1,78 @@
+[workflow]
+name = "atomate2.phonons"
+description = "atomate2's PhononMaker: a VASP relaxation, then static calculations of displaced supercells and phonopy's harmonic phonons, band structure, density of states and thermodynamics, with atomate2's input sets and custodian error handling"
+declaration_uri = "https://raw.githubusercontent.com/httk/workflows-vasp-atomate2/refs/tags/wf-decl-v0.1.0/atomate2-phonons/declaration.json"
+declaration_file = "declaration.json"
+requires = ["httk-workflow>=2.1.1", "atomate2>=0.1.5", "phonopy>=2.20", "seekpath>=2.0"]
+
+[workflow.runner]
+format = "jobflow"
+maker = "atomate2.vasp.flows.phonons:PhononMaker"
+
+[workflow.parameters.min_length]
+type = "number"
+description = "The minimum supercell length, in Angstrom (atomate2's default when not given)."
+
+[workflow.parameters.born_maker]
+description = "null skips the Born effective charge calculation (atomate2 runs it by default)."
+
+[workflow.parameters.use_symmetrized_structure]
+type = "string"
+description = "\"primitive\" runs on the standardized primitive cell, for which the q-point path and its labels are meaningful (atomate2's default: the cell as given)."
+
+[workflow.inputs.structure]
+port = "structure"
+role = "initial_structure"
+entry_type = "structures"
+required = true
+
+[workflow.outputs.relaxed_structure]
+entry_type = "structures"
+role = "relaxed_structure"
+ref = "https://schemas.optimade.org/defs/v1.3/entrytypes/optimade/structures"
+description = "The relaxed structure."
+product_of = "initial_structure"
+
+[workflow.outputs.phonon_cell]
+entry_type = "structures"
+role = "phonon_cell"
+ref = "https://schemas.optimade.org/defs/v1.3/entrytypes/optimade/structures"
+description = "The cell whose dynamical matrix phonopy diagonalized; the phonon records refer to it."
+product_of = "relaxed_structure"
+
+[workflow.outputs.phonon_band_structure]
+entry_type = "records"
+role = "phonon_band_structure"
+ref = "https://schemas.httk.org/defs/v0.1/properties/thermodynamics/phonon_band_structure"
+description = "The phonon frequencies of the phonon cell along the high-symmetry q-point path, in THz."
+product_of = "phonon_cell"
+
+[workflow.outputs.phonon_density_of_states]
+entry_type = "records"
+role = "phonon_density_of_states"
+ref = "https://schemas.httk.org/defs/v0.1/properties/thermodynamics/phonon_density_of_states"
+description = "The phonon density of states of the phonon cell, in modes per THz per cell."
+product_of = "phonon_cell"
+
+[workflow.outputs.vibrational_thermodynamics]
+entry_type = "records"
+role = "vibrational_thermodynamics"
+ref = "https://schemas.httk.org/defs/v0.1/properties/thermodynamics/vibrational_thermodynamics"
+description = "The harmonic vibrational free energy, internal energy, entropy and heat capacity of the phonon cell versus temperature."
+product_of = "phonon_cell"
+
+[workflow.outputs.zero_point_energy]
+entry_type = "records"
+role = "zero_point_energy"
+ref = "https://schemas.httk.org/defs/v0.1/properties/thermodynamics/zero_point_energy"
+description = "The vibrational zero-point energy of the phonon cell, in eV."
+product_of = "phonon_cell"
+
+[workflow.outputs.task_document]
+entry_type = "files"
+role = "task_document"
+description = "jobflow-outputs.json: the flow's final output (atomate2 task documents) as JSON."
+product_of = "initial_structure"
+
+[workflow.collect]
+file = "collect.py"

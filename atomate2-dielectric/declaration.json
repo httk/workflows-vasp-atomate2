@@ -1,0 +1,63 @@
+{
+  "$id": "https://raw.githubusercontent.com/httk/workflows-vasp-atomate2/refs/tags/wf-decl-v0.1.0/atomate2-dielectric/declaration.json",
+  "title": "atomate2 VASP dielectric response",
+  "description": "This workflow declaration defines the httk atomate2-dielectric workflow: it runs atomate2's DielectricMaker, one VASP density-functional perturbation theory (LEPSILON, IBRION = 8) calculation of the dielectric, Born effective charge and piezoelectric response of an insulator. The protocol, the VASP input sets and the custodian error handling are those of atomate2's DielectricMaker.\nIt defines the meaning of its roles: input role initial_structure is a structures entry containing the structure whose dielectric response is computed.\nOutput role dielectric_cell is a structures entry containing the cell the response refers to, in the task document's site order, output role static_relative_permittivity is a records entry containing the isotropic mean of the static (electronic plus ionic) relative permittivity tensor, output role high_frequency_relative_permittivity is a records entry containing the isotropic mean of the high-frequency (electronic, ion-clamped, with local-field effects) relative permittivity tensor, output role born_effective_charges is a records entry containing the Born effective charge tensors of the sites of the dielectric cell, as VASP prints them (row: field direction, column: displacement direction), output role piezoelectric_tensor is a records entry containing the relaxed-ion piezoelectric tensor (electronic plus ionic), in C/m^2, Voigt order xx yy zz yz xz xy, output role total_energy is a records entry containing the total energy of the structure: the final ionic step's energy(sigma->0), in eV, and output role task_document is a files entry containing jobflow-outputs.json: the flow's final output (atomate2 task documents) as JSON.",
+  "x-httk-definition": {
+    "kind": "workflow_declaration",
+    "format": "0.1",
+    "version": "0.1.0",
+    "name": "atomate2-dielectric",
+    "label": "atomate2_dielectric_workflow_httk"
+  },
+  "inputs": [
+    {
+      "name": "initial_structure",
+      "entry_type": "structures",
+      "ref": "https://schemas.optimade.org/defs/v1.3/entrytypes/optimade/structures",
+      "description": "The structure whose dielectric response is computed."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "dielectric_cell",
+      "entry_type": "structures",
+      "ref": "https://schemas.optimade.org/defs/v1.3/entrytypes/optimade/structures",
+      "description": "The cell the response refers to, in the task document's site order."
+    },
+    {
+      "name": "static_relative_permittivity",
+      "entry_type": "records",
+      "ref": "https://schemas.httk.org/defs/v0.1/properties/electronic/static_relative_permittivity",
+      "description": "The isotropic mean of the static (electronic plus ionic) relative permittivity tensor."
+    },
+    {
+      "name": "high_frequency_relative_permittivity",
+      "entry_type": "records",
+      "ref": "https://schemas.httk.org/defs/v0.1/properties/electronic/high_frequency_relative_permittivity",
+      "description": "The isotropic mean of the high-frequency (electronic, ion-clamped, with local-field effects) relative permittivity tensor."
+    },
+    {
+      "name": "born_effective_charges",
+      "entry_type": "records",
+      "ref": "https://schemas.httk.org/defs/v0.1/properties/electronic/born_effective_charges",
+      "description": "The Born effective charge tensors of the sites of the dielectric cell, as VASP prints them (row: field direction, column: displacement direction)."
+    },
+    {
+      "name": "piezoelectric_tensor",
+      "entry_type": "records",
+      "ref": "https://schemas.httk.org/defs/v0.1/properties/mechanics/piezoelectric_tensor",
+      "description": "The relaxed-ion piezoelectric tensor (electronic plus ionic), in C/m^2, Voigt order xx yy zz yz xz xy."
+    },
+    {
+      "name": "total_energy",
+      "entry_type": "records",
+      "ref": "https://schemas.httk.org/defs/v0.1/properties/core/total_energy",
+      "description": "The total energy of the structure: the final ionic step's energy(sigma->0), in eV."
+    },
+    {
+      "name": "task_document",
+      "entry_type": "files",
+      "description": "jobflow-outputs.json: the flow's final output (atomate2 task documents) as JSON."
+    }
+  ]
+}

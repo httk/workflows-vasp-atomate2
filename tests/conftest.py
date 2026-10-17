@@ -10,6 +10,7 @@ import os
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from httk.workflow.registry import register_workspace
@@ -42,6 +43,8 @@ def _isolated_httk_config(tmp_path_factory: pytest.TempPathFactory, monkeypatch:
     monkeypatch.setenv("HTTK_DATA_HOME", str(tmp_path_factory.mktemp("httk-store")))
     # A machine exporting a real VASP command must never run it from a test.
     monkeypatch.delenv("HTTK_VASP_COMMAND", raising=False)
+    # The fake VASP's elastic reference lattice is set by the tests that need it.
+    monkeypatch.delenv("HTTK_FAKE_VASP_REFERENCE_A", raising=False)
     for key in list(os.environ):
         if key.startswith(("ATOMATE2_", "PMG_")):
             monkeypatch.delenv(key)
@@ -66,6 +69,79 @@ def register_ws(path: object, name: str = "ws") -> str:
 
     register_workspace(name, str(path))
     return name
+
+
+def silicon() -> object:
+    """Conventional diamond Si, 8 atoms, a = 5.43 Angstrom (a pymatgen ``Structure``)."""
+
+    from pymatgen.core import Lattice, Structure
+
+    return Structure.from_spacegroup("Fd-3m", Lattice.cubic(5.43), ["Si"], [[0.0, 0.0, 0.0]])
+
+
+def aluminium() -> object:
+    """Primitive fcc Al, 1 atom, a = 4.05 Angstrom (a pymatgen ``Structure``)."""
+
+    from pymatgen.core import Lattice, Structure
+
+    fcc = [[0.0, 0.0, 0.0], [0.5, 0.5, 0.0], [0.5, 0.0, 0.5], [0.0, 0.5, 0.5]]
+    return Structure(Lattice.cubic(4.05), ["Al"] * 4, fcc).get_primitive_structure()
+
+
+def configure_fake_vasp(monkeypatch: pytest.MonkeyPatch, directory: Path) -> None:
+    """Point in-process atomate2 and pymatgen at the fakes and run in *directory*.
+
+    pymatgen builds one SETTINGS dict lazily and shares it, so it is patched in place,
+    which works whatever imported pymatgen first. custodian polls its job every 10 s
+    by default; the fake finishes in well under a second, so in-process runs poll faster.
+    """
+
+    import functools
+    import inspect
+
+    import atomate2.vasp.run
+    from custodian import Custodian
+    from pymatgen.core import SETTINGS
+
+    defaults = inspect.signature(atomate2.vasp.run.run_vasp).parameters
+    if defaults["vasp_cmd"].default != FAKE_VASP or defaults["vasp_gamma_cmd"].default != FAKE_VASP:
+        pytest.fail("atomate2 was imported before conftest.py set ATOMATE2_VASP_CMD")
+    for key, value in {"ATOMATE2_VASP_CMD": FAKE_VASP, "ATOMATE2_VASP_GAMMA_CMD": FAKE_VASP}.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("PMG_VASP_PSP_DIR", FAKE_PSP)
+    for key in list(SETTINGS):
+        monkeypatch.delitem(SETTINGS, key)
+    monkeypatch.setitem(SETTINGS, "PMG_VASP_PSP_DIR", FAKE_PSP)
+    monkeypatch.setattr(
+        atomate2.vasp.run, "Custodian", functools.partial(Custodian, polling_time_step=0.1, monitor_freq=1)
+    )
+    monkeypatch.chdir(directory)
+
+
+@pytest.fixture
+def fake_vasp(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """Point atomate2 and pymatgen at the fakes and run in *tmp_path*."""
+
+    configure_fake_vasp(monkeypatch, tmp_path)
+    return tmp_path
+
+
+def flow_document(flow: object) -> dict:
+    """Run *flow* in-process and return the ``jobflow-outputs.json`` document httk's runner writes for it.
+
+    As httk's jobflow runner, the flow's output references are resolved with the data
+    store's blobs loaded, and the result is sanitized to plain JSON values.
+    """
+
+    from jobflow import JobStore, run_locally
+    from jobflow.core.reference import find_and_resolve_references
+    from maggma.stores import MemoryStore
+    from monty.json import jsanitize
+
+    store = JobStore(MemoryStore(), additional_stores={"data": MemoryStore()})
+    run_locally(flow, store=store, create_folders=True, ensure_success=True)
+    output = find_and_resolve_references(cast(Any, flow).output, store)
+    return {"output": jsanitize(output, strict=True, enum_values=True)}
 
 
 @dataclass(frozen=True)

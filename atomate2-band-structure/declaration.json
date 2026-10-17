@@ -1,0 +1,57 @@
+{
+  "$id": "https://raw.githubusercontent.com/httk/workflows-vasp-atomate2/refs/tags/wf-decl-v0.1.0/atomate2-band-structure/declaration.json",
+  "title": "atomate2 VASP band structure",
+  "description": "This workflow declaration defines the httk atomate2-band-structure workflow: it runs atomate2's BandStructureMaker, a VASP static calculation, then non-self-consistent calculations on a uniform k-point mesh and along a high-symmetry k-point path. The protocol, the VASP input sets and the custodian error handling are those of atomate2's BandStructureMaker.\nIt defines the meaning of its roles: input role initial_structure is a structures entry containing the structure whose band structure is computed.\nOutput role band_structure_cell is a structures entry containing the structure the band k-points refer to: the cell of the line-mode calculation, output role electronic_band_structure is a records entry containing the band energies of the band-structure cell along the high-symmetry k-point path, in eV, output role electronic_density_of_states is a records entry containing the electronic density of states of the band-structure cell from the uniform k-point mesh, spin-summed, output role band_gap is a records entry containing the band gap of the band-structure cell from the uniform k-point mesh, in eV, output role fermi_energy is a records entry containing the Fermi energy of the uniform k-point-mesh calculation, in eV, and output role task_document is a files entry containing jobflow-outputs.json: the flow's final output (atomate2 task documents) as JSON.",
+  "x-httk-definition": {
+    "kind": "workflow_declaration",
+    "format": "0.1",
+    "version": "0.1.0",
+    "name": "atomate2-band-structure",
+    "label": "atomate2_band_structure_workflow_httk"
+  },
+  "inputs": [
+    {
+      "name": "initial_structure",
+      "entry_type": "structures",
+      "ref": "https://schemas.optimade.org/defs/v1.3/entrytypes/optimade/structures",
+      "description": "The structure whose band structure is computed."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "band_structure_cell",
+      "entry_type": "structures",
+      "ref": "https://schemas.optimade.org/defs/v1.3/entrytypes/optimade/structures",
+      "description": "The structure the band k-points refer to: the cell of the line-mode calculation."
+    },
+    {
+      "name": "electronic_band_structure",
+      "entry_type": "records",
+      "ref": "https://schemas.httk.org/defs/v0.1/properties/electronic/electronic_band_structure",
+      "description": "The band energies of the band-structure cell along the high-symmetry k-point path, in eV."
+    },
+    {
+      "name": "electronic_density_of_states",
+      "entry_type": "records",
+      "ref": "https://schemas.httk.org/defs/v0.1/properties/electronic/electronic_density_of_states",
+      "description": "The electronic density of states of the band-structure cell from the uniform k-point mesh, spin-summed."
+    },
+    {
+      "name": "band_gap",
+      "entry_type": "records",
+      "ref": "https://schemas.httk.org/defs/v0.1/properties/electronic/band_gap",
+      "description": "The band gap of the band-structure cell from the uniform k-point mesh, in eV."
+    },
+    {
+      "name": "fermi_energy",
+      "entry_type": "records",
+      "ref": "https://schemas.httk.org/defs/v0.1/properties/electronic/fermi_energy",
+      "description": "The Fermi energy of the uniform k-point-mesh calculation, in eV."
+    },
+    {
+      "name": "task_document",
+      "entry_type": "files",
+      "description": "jobflow-outputs.json: the flow's final output (atomate2 task documents) as JSON."
+    }
+  ]
+}

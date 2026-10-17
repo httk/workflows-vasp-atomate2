@@ -1,4 +1,8 @@
-"""Each package loads as a jobflow package of its Maker, matches its declaration, and shares one collect hook."""
+"""Each package loads as a jobflow package of its Maker and matches its declaration.
+
+The four structure/energy packages share one collect hook; the physics packages share
+helper code, pinned in ``test_physics_hooks.py``.
+"""
 
 import importlib
 import json
@@ -14,8 +18,15 @@ _MAKERS = {
     "atomate2-relax": ("atomate2.relax", "atomate2.vasp.jobs.core:RelaxMaker"),
     "atomate2-tight-relax": ("atomate2.tight-relax", "atomate2.vasp.jobs.core:TightRelaxMaker"),
     "atomate2-double-relax": ("atomate2.double-relax", "atomate2.vasp.flows.core:DoubleRelaxMaker"),
+    "atomate2-band-structure": ("atomate2.band-structure", "atomate2.vasp.flows.core:BandStructureMaker"),
+    "atomate2-dielectric": ("atomate2.dielectric", "atomate2.vasp.jobs.core:DielectricMaker"),
+    "atomate2-elastic": ("atomate2.elastic", "atomate2.vasp.flows.elastic:ElasticMaker"),
+    "atomate2-phonons": ("atomate2.phonons", "atomate2.vasp.flows.phonons:PhononMaker"),
 }
 _DIRECTORIES = tuple(_MAKERS)
+_STRUCTURE_ENERGY = ("atomate2-static", "atomate2-relax", "atomate2-tight-relax", "atomate2-double-relax")
+#: Declared Maker parameters: only these are passed to the Maker, and only when given.
+_PARAMETERS = {"atomate2-phonons": {"min_length", "born_maker", "use_symmetrized_structure"}}
 
 
 @pytest.mark.parametrize("directory", _DIRECTORIES)
@@ -27,7 +38,9 @@ def test_package_is_a_jobflow_package_of_its_maker(directory: str) -> None:
     assert provider.collect_file == "collect.py"
     assert callable(provider.collector)
     assert provider.inputs == {"structure": None}
-    assert not provider.parameters
+    assert set(provider.parameters) == _PARAMETERS.get(directory, set())
+    # No resource table ships: sites differ (the README shows one).
+    assert "resources" not in provider.runner_options
 
 
 @pytest.mark.parametrize("directory", _DIRECTORIES)
@@ -61,6 +74,6 @@ def test_plugin_manifest_lists_exactly_the_package_directories() -> None:
     assert packages == set(_DIRECTORIES)
 
 
-def test_collect_hooks_are_identical() -> None:
-    hooks = {(REPO_ROOT / directory / "collect.py").read_bytes() for directory in _DIRECTORIES}
+def test_structure_energy_collect_hooks_are_identical() -> None:
+    hooks = {(REPO_ROOT / directory / "collect.py").read_bytes() for directory in _STRUCTURE_ENERGY}
     assert len(hooks) == 1

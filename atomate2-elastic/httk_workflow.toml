@@ -1,0 +1,95 @@
+[workflow]
+name = "atomate2.elastic"
+description = "atomate2's ElasticMaker: a VASP relaxation, then relaxations of strained cells, and a fit of the elastic tensor to their stresses, with atomate2's input sets and custodian error handling"
+declaration_uri = "https://raw.githubusercontent.com/httk/workflows-vasp-atomate2/refs/tags/wf-decl-v0.1.0/atomate2-elastic/declaration.json"
+declaration_file = "declaration.json"
+requires = ["httk-workflow>=2.1.1", "atomate2>=0.1.5"]
+
+[workflow.runner]
+format = "jobflow"
+maker = "atomate2.vasp.flows.elastic:ElasticMaker"
+
+[workflow.inputs.structure]
+port = "structure"
+role = "initial_structure"
+entry_type = "structures"
+required = true
+
+[workflow.outputs.relaxed_structure]
+entry_type = "structures"
+role = "relaxed_structure"
+ref = "https://schemas.optimade.org/defs/v1.3/entrytypes/optimade/structures"
+description = "The relaxed structure that was strained."
+product_of = "initial_structure"
+
+[workflow.outputs.elastic_tensor]
+entry_type = "records"
+role = "elastic_tensor"
+ref = "https://schemas.httk.org/defs/v0.1/properties/mechanics/elastic_tensor"
+description = "The fitted elastic stiffness tensor in Voigt form, in GPa, in the Cartesian frame of the relaxed structure."
+product_of = "relaxed_structure"
+
+[workflow.outputs.compliance_tensor]
+entry_type = "records"
+role = "compliance_tensor"
+ref = "https://schemas.httk.org/defs/v0.1/properties/mechanics/compliance_tensor"
+description = "The elastic compliance tensor in Voigt form, in GPa^-1, in the Cartesian frame of the relaxed structure."
+product_of = "relaxed_structure"
+
+[workflow.outputs.bulk_modulus_voigt]
+entry_type = "records"
+role = "bulk_modulus_voigt"
+ref = "https://schemas.httk.org/defs/v0.1/properties/mechanics/bulk_modulus_voigt"
+description = "The Voigt bulk modulus, in GPa."
+product_of = "relaxed_structure"
+
+[workflow.outputs.bulk_modulus_reuss]
+entry_type = "records"
+role = "bulk_modulus_reuss"
+ref = "https://schemas.httk.org/defs/v0.1/properties/mechanics/bulk_modulus_reuss"
+description = "The Reuss bulk modulus, in GPa."
+product_of = "relaxed_structure"
+
+[workflow.outputs.bulk_modulus_hill]
+entry_type = "records"
+role = "bulk_modulus_hill"
+ref = "https://schemas.httk.org/defs/v0.1/properties/mechanics/bulk_modulus_hill"
+description = "The Hill bulk modulus, in GPa."
+product_of = "relaxed_structure"
+
+[workflow.outputs.shear_modulus_voigt]
+entry_type = "records"
+role = "shear_modulus_voigt"
+ref = "https://schemas.httk.org/defs/v0.1/properties/mechanics/shear_modulus_voigt"
+description = "The Voigt shear modulus, in GPa."
+product_of = "relaxed_structure"
+
+[workflow.outputs.shear_modulus_reuss]
+entry_type = "records"
+role = "shear_modulus_reuss"
+ref = "https://schemas.httk.org/defs/v0.1/properties/mechanics/shear_modulus_reuss"
+description = "The Reuss shear modulus, in GPa."
+product_of = "relaxed_structure"
+
+[workflow.outputs.shear_modulus_hill]
+entry_type = "records"
+role = "shear_modulus_hill"
+ref = "https://schemas.httk.org/defs/v0.1/properties/mechanics/shear_modulus_hill"
+description = "The Hill shear modulus, in GPa."
+product_of = "relaxed_structure"
+
+[workflow.outputs.universal_anisotropy_index]
+entry_type = "records"
+role = "universal_anisotropy_index"
+ref = "https://schemas.httk.org/defs/v0.1/properties/mechanics/universal_anisotropy_index"
+description = "The universal elastic anisotropy index."
+product_of = "relaxed_structure"
+
+[workflow.outputs.task_document]
+entry_type = "files"
+role = "task_document"
+description = "jobflow-outputs.json: the flow's final output (atomate2 task documents) as JSON."
+product_of = "initial_structure"
+
+[workflow.collect]
+file = "collect.py"

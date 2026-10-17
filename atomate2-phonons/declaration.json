@@ -1,0 +1,63 @@
+{
+  "$id": "https://raw.githubusercontent.com/httk/workflows-vasp-atomate2/refs/tags/wf-decl-v0.1.0/atomate2-phonons/declaration.json",
+  "title": "atomate2 VASP harmonic phonons",
+  "description": "This workflow declaration defines the httk atomate2-phonons workflow: it runs atomate2's PhononMaker, a VASP relaxation, then static calculations of displaced supercells and phonopy's harmonic phonons, band structure, density of states and thermodynamics. The protocol, the VASP input sets and the custodian error handling are those of atomate2's PhononMaker.\nIt defines the meaning of its roles: input role initial_structure is a structures entry containing the structure whose phonons are computed.\nOutput role relaxed_structure is a structures entry containing the relaxed structure, output role phonon_cell is a structures entry containing the cell whose dynamical matrix phonopy diagonalized; the phonon records refer to it, output role phonon_band_structure is a records entry containing the phonon frequencies of the phonon cell along the high-symmetry q-point path, in THz, output role phonon_density_of_states is a records entry containing the phonon density of states of the phonon cell, in modes per THz per cell, output role vibrational_thermodynamics is a records entry containing the harmonic vibrational free energy, internal energy, entropy and heat capacity of the phonon cell versus temperature, output role zero_point_energy is a records entry containing the vibrational zero-point energy of the phonon cell, in eV, and output role task_document is a files entry containing jobflow-outputs.json: the flow's final output (atomate2 task documents) as JSON.",
+  "x-httk-definition": {
+    "kind": "workflow_declaration",
+    "format": "0.1",
+    "version": "0.1.0",
+    "name": "atomate2-phonons",
+    "label": "atomate2_phonons_workflow_httk"
+  },
+  "inputs": [
+    {
+      "name": "initial_structure",
+      "entry_type": "structures",
+      "ref": "https://schemas.optimade.org/defs/v1.3/entrytypes/optimade/structures",
+      "description": "The structure whose phonons are computed."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "relaxed_structure",
+      "entry_type": "structures",
+      "ref": "https://schemas.optimade.org/defs/v1.3/entrytypes/optimade/structures",
+      "description": "The relaxed structure."
+    },
+    {
+      "name": "phonon_cell",
+      "entry_type": "structures",
+      "ref": "https://schemas.optimade.org/defs/v1.3/entrytypes/optimade/structures",
+      "description": "The cell whose dynamical matrix phonopy diagonalized; the phonon records refer to it."
+    },
+    {
+      "name": "phonon_band_structure",
+      "entry_type": "records",
+      "ref": "https://schemas.httk.org/defs/v0.1/properties/thermodynamics/phonon_band_structure",
+      "description": "The phonon frequencies of the phonon cell along the high-symmetry q-point path, in THz."
+    },
+    {
+      "name": "phonon_density_of_states",
+      "entry_type": "records",
+      "ref": "https://schemas.httk.org/defs/v0.1/properties/thermodynamics/phonon_density_of_states",
+      "description": "The phonon density of states of the phonon cell, in modes per THz per cell."
+    },
+    {
+      "name": "vibrational_thermodynamics",
+      "entry_type": "records",
+      "ref": "https://schemas.httk.org/defs/v0.1/properties/thermodynamics/vibrational_thermodynamics",
+      "description": "The harmonic vibrational free energy, internal energy, entropy and heat capacity of the phonon cell versus temperature."
+    },
+    {
+      "name": "zero_point_energy",
+      "entry_type": "records",
+      "ref": "https://schemas.httk.org/defs/v0.1/properties/thermodynamics/zero_point_energy",
+      "description": "The vibrational zero-point energy of the phonon cell, in eV."
+    },
+    {
+      "name": "task_document",
+      "entry_type": "files",
+      "description": "jobflow-outputs.json: the flow's final output (atomate2 task documents) as JSON."
+    }
+  ]
+}

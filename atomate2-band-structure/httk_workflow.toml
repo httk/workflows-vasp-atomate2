@@ -1,0 +1,60 @@
+[workflow]
+name = "atomate2.band-structure"
+description = "atomate2's BandStructureMaker: a VASP static calculation, then non-self-consistent calculations on a uniform k-point mesh and along a high-symmetry k-point path, with atomate2's input sets and custodian error handling"
+declaration_uri = "https://raw.githubusercontent.com/httk/workflows-vasp-atomate2/refs/tags/wf-decl-v0.1.0/atomate2-band-structure/declaration.json"
+declaration_file = "declaration.json"
+requires = ["httk-workflow>=2.1.1", "atomate2>=0.1.5"]
+
+[workflow.runner]
+format = "jobflow"
+maker = "atomate2.vasp.flows.core:BandStructureMaker"
+
+[workflow.inputs.structure]
+port = "structure"
+role = "initial_structure"
+entry_type = "structures"
+required = true
+
+[workflow.outputs.band_structure_cell]
+entry_type = "structures"
+role = "band_structure_cell"
+ref = "https://schemas.optimade.org/defs/v1.3/entrytypes/optimade/structures"
+description = "The structure the band k-points refer to: the cell of the line-mode calculation."
+product_of = "initial_structure"
+
+[workflow.outputs.electronic_band_structure]
+entry_type = "records"
+role = "electronic_band_structure"
+ref = "https://schemas.httk.org/defs/v0.1/properties/electronic/electronic_band_structure"
+description = "The band energies of the band-structure cell along the high-symmetry k-point path, in eV."
+product_of = "band_structure_cell"
+
+[workflow.outputs.electronic_density_of_states]
+entry_type = "records"
+role = "electronic_density_of_states"
+ref = "https://schemas.httk.org/defs/v0.1/properties/electronic/electronic_density_of_states"
+description = "The electronic density of states of the band-structure cell from the uniform k-point mesh, spin-summed."
+product_of = "band_structure_cell"
+
+[workflow.outputs.band_gap]
+entry_type = "records"
+role = "band_gap"
+ref = "https://schemas.httk.org/defs/v0.1/properties/electronic/band_gap"
+description = "The band gap of the band-structure cell from the uniform k-point mesh, in eV."
+product_of = "band_structure_cell"
+
+[workflow.outputs.fermi_energy]
+entry_type = "records"
+role = "fermi_energy"
+ref = "https://schemas.httk.org/defs/v0.1/properties/electronic/fermi_energy"
+description = "The Fermi energy of the uniform k-point-mesh calculation, in eV."
+product_of = "band_structure_cell"
+
+[workflow.outputs.task_document]
+entry_type = "files"
+role = "task_document"
+description = "jobflow-outputs.json: the flow's final output (atomate2 task documents) as JSON."
+product_of = "initial_structure"
+
+[workflow.collect]
+file = "collect.py"
