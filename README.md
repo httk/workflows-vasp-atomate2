@@ -37,6 +37,18 @@ httk workflow run
 httk collect
 ```
 
+## Install with pip
+
+From a clone, `pip install -e .` or `pip install .` installs the workflows'
+dependencies and makes every workflow of this repository known to *httk₂* in
+that Python environment, at HEAD and at every `wf-v*` tag, each under its
+GitHub commit URI. Only committed content is installed; use a package path
+for a working copy. An editable install follows `git pull` (restart running
+httk processes); a non-editable install at an unchanged version picks up new
+tags only with `pip install --force-reinstall --no-deps .`. Shallow clones are
+refused (`git fetch --unshallow --tags`). `pip install -e '.[dispatcher]'`
+also installs *httk-workflow-vasp*, for the VASP variant dispatcher.
+
 ## Configuration
 
 The jobflow runner of *httk-workflow* turns workspace settings into the
