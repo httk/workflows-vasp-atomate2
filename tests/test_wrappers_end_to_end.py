@@ -25,9 +25,14 @@ pytest.importorskip("httk.atomistic")
 from httk.atomistic import UnitcellStructureView
 from httk.core import DataRecord, FileRecord
 from httk.workflow import TaskManager, Workspace, collect
+from httk.workflow.collecting import JobRecord
 from httk.workflow.introspection import read_state, resolve_job
+from httk.workflow.packages import load_workflow_package
+from httk.workflow.postprocessing import run_postprocess_script
 from httk.workflow.scaffold import new_job
+from pymatgen.core import Structure
 
+import fake_vasp_atomate2 as fake
 from conftest import FAKE_PSP, FAKE_VASP, TestProfile, aluminium, register_ws, silicon
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -107,6 +112,46 @@ def _run(
     return workspace, job.job_id
 
 
+def _postprocess(directory: str, record: JobRecord, script: str) -> Path:
+    """Run the package's postprocess *script* for *record*, check it succeeded, and return its output directory."""
+
+    result = run_postprocess_script(load_workflow_package(REPO_ROOT / directory, register=False), script, record)
+    assert result.returncode == 0, result.stdout + result.stderr
+    return result.output_dir
+
+
+def _report(directory: str, record: JobRecord) -> dict[str, Any]:
+    """Run the ``report`` script and return its ``report.json``."""
+
+    output = _postprocess(directory, record, "report")
+    assert (output / "report.txt").is_file()
+    return json.loads((output / "report.json").read_text(encoding="utf-8"))
+
+
+def _plots(directory: str, record: JobRecord) -> set[str]:
+    """Run the ``plots`` script and return the names of the files it wrote."""
+
+    return {path.name for path in _postprocess(directory, record, "plots").iterdir()}
+
+
+def _plot_data(record: JobRecord, name: str) -> dict[str, Any]:
+    """A JSON file the ``plots`` script wrote next to its figures."""
+
+    output = Path(record.workspace_root, "postprocess", *record.placement.parts, record.job_key, "plots")
+    return json.loads((output / name).read_text(encoding="utf-8"))
+
+
+def _check_child_postprocess(directory: str, records: list[JobRecord]) -> None:
+    """A jobflow child job's scripts succeed silently and write nothing: its parent's flow output holds the results."""
+
+    child = next(record for record in records if record.parameter("jobflow_child_job", None) is not None)
+    package = load_workflow_package(REPO_ROOT / directory, register=False)
+    for script in ("report", "plots"):
+        result = run_postprocess_script(package, script, child)
+        assert (result.returncode, result.stdout, result.stderr) == (0, "", ""), script
+        assert not list(result.output_dir.iterdir()), script
+
+
 @pytest.mark.parametrize("directory", tuple(_RUNS))
 def test_package_runs_and_collects(tmp_path: Path, directory: str, test_profile: TestProfile) -> None:
     if directory not in _NORMAL and not test_profile.extended:
@@ -126,7 +171,8 @@ def test_package_runs_and_collects(tmp_path: Path, directory: str, test_profile:
     titels = [titel for item in invocations for titel in item["potcar_titels"]]
     assert titels and all("FAKE-test-fixture-not-a-real-POTCAR" in titel for titel in titels)
 
-    (item,) = [item for item in collect(workspace, fail_fast=True, allow_job_collector=True) if item.outputs]
+    collected = list(collect(workspace, fail_fast=True, allow_job_collector=True))
+    (item,) = [item for item in collected if item.outputs]
     outputs = item.outputs
     assert isinstance(outputs["total_energy"], DataRecord)
     assert outputs["total_energy"].value == pytest.approx(-40.0, abs=0.1)
@@ -139,6 +185,27 @@ def test_package_runs_and_collects(tmp_path: Path, directory: str, test_profile:
     assert set(outputs) == expected
     if _BAND_GAP:
         assert outputs["band_gap"].value == pytest.approx(1.0)
+    # The same run feeds the postprocess checks.
+    report = _report(directory, item.record)
+    assert report["energy_eV"] == outputs["total_energy"].value
+    if _BAND_GAP:
+        assert report["band_gap_eV"] == outputs["band_gap"].value
+    if directory == "atomate2-static":
+        assert report["fermi_energy_eV"] == pytest.approx(5.0) and report["total_magnetization_muB"] == 0
+        # The DOS comes from the static run's vasprun.xml.gz, found through the document's dir_name token.
+        assert _plots(directory, item.record) == {"dos.png", "dos.json"}
+        # A gapped system's DOS is plotted relative to its VBM, the axis label says so.
+        reference = _plot_data(item.record, "dos.json")
+        assert (reference["zero_eV"], reference["label"]) == (report["vbm_eV"], "E − E_VBM (eV)")
+    else:
+        assert report["relaxed"]["space_group_number"] == report["initial"]["space_group_number"] == 227
+        assert report["initial_source"] == "job input"
+        output = _postprocess(directory, item.record, "report")
+        relaxed = Structure.from_file(output / "relaxed.POSCAR")
+        assert relaxed.volume == pytest.approx(report["relaxed"]["volume_angstrom3"])
+        assert relaxed.matches(Structure.from_file(output / "relaxed.cif"))
+        assert _plots(directory, item.record) == {"relaxation.png", "relaxation.json"}
+    _check_child_postprocess(directory, [item.record for item in collected])
     if directory == "atomate2-double-relax" and importlib.util.find_spec("httk.store") is not None:
         # The same run feeds the store check, rather than a second run.
         _check_double_relax_store(tmp_path, workspace, item)
@@ -218,11 +285,14 @@ def test_physics_package_runs_and_collects(tmp_path: Path, directory: str, test_
     invocations = [line for log in workspace.root.rglob("fake-vasp-invocations.jsonl") for line in log.open()]
     assert len(invocations) == runs
 
-    (item,) = [item for item in collect(workspace, fail_fast=True, allow_job_collector=True) if item.outputs]
+    collected = list(collect(workspace, fail_fast=True, allow_job_collector=True))
+    (item,) = [item for item in collected if item.outputs]
     declaration = json.loads((REPO_ROOT / directory / "declaration.json").read_text(encoding="utf-8"))
     assert set(item.outputs) == {output["name"] for output in declaration["outputs"]}
     assert not item.unfulfilled
     outputs = item.outputs
+    _check_physics_postprocess(directory, item)
+    _check_child_postprocess(directory, [item.record for item in collected])
     if directory == "atomate2-band-structure":
         assert outputs["band_gap"].value == pytest.approx(1.0)
         assert "X" in outputs["electronic_band_structure"].value["kpoint_labels"]
@@ -235,6 +305,68 @@ def test_physics_package_runs_and_collects(tmp_path: Path, directory: str, test_
         assert outputs["zero_point_energy"].value > 0
     if directory == "atomate2-band-structure" and importlib.util.find_spec("httk.store") is not None:
         _check_band_structure_store(tmp_path, workspace, item)
+
+
+#: The figures (and plotted data) each physics package's ``plots`` script writes.
+_FIGURES = {
+    "atomate2-band-structure": {
+        "band_structure.png",
+        "band_structure.json",
+        "dos.png",
+        "dos.json",
+        "band_structure_dos.png",
+    },
+    "atomate2-dielectric": {"dielectric.png", "born_charges.png"},
+    "atomate2-elastic": {
+        "elastic_tensor.png",
+        "youngs_modulus.png",
+        "youngs_modulus.json",
+        "stress_strain.png",
+        "stress_strain.json",
+    },
+    "atomate2-phonons": {
+        "phonon_band_structure.png",
+        "phonon_dos.png",
+        "phonon_band_structure_dos.png",
+        "phonon_thermodynamics.png",
+    },
+}
+
+
+def _check_physics_postprocess(directory: str, item: Any) -> None:
+    """The package's report repeats the collected values, and its plots script writes every figure."""
+
+    report, outputs = _report(directory, item.record), item.outputs
+    if directory == "atomate2-band-structure":
+        assert report["band_gap_eV"] == outputs["band_gap"].value
+        assert report["fermi_energy_eV"] == outputs["fermi_energy"].value
+        # Headline values from the uniform mesh; the line path's are named line_*.
+        assert report["direct_gap"] is True and report["vbm_eV"] == pytest.approx(fake.EFERMI - 0.5)
+        assert report["line_direct_gap"] is True
+        assert report["line_vbm"]["kpoint_label"] == report["line_cbm"]["kpoint_label"]
+    elif directory == "atomate2-dielectric":
+        averages = report["averages"]
+        high_frequency = outputs["high_frequency_relative_permittivity"].high_frequency_relative_permittivity
+        assert averages["electronic"] == pytest.approx(high_frequency)
+        assert averages["total"] == pytest.approx(outputs["static_relative_permittivity"].static_relative_permittivity)
+        assert report["refractive_index"] == pytest.approx(averages["electronic"] ** 0.5)
+        assert report["piezoelectric_tensor_C_per_m2"] == outputs["piezoelectric_tensor"].value
+        charges = [site["tensor"] for site in report["born_effective_charges"]]
+        assert charges == outputs["born_effective_charges"].value
+    elif directory == "atomate2-elastic":
+        assert report["bulk_modulus_GPa"]["hill"] == pytest.approx(outputs["bulk_modulus_hill"].bulk_modulus_hill)
+        assert report["shear_modulus_GPa"]["reuss"] == pytest.approx(outputs["shear_modulus_reuss"].shear_modulus_reuss)
+        assert report["born_stable_zero_stress"] is True and report["max_abs_equilibrium_stress_GPa"] >= 0
+    else:
+        assert report["zero_point_energy_eV_per_cell"] == pytest.approx(outputs["zero_point_energy"].value)
+        assert report["non_analytical_correction"] is False
+    assert _plots(directory, item.record) == _FIGURES[directory]
+    if directory == "atomate2-band-structure":
+        # Every electronic figure shares one zero, the uniform mesh's VBM, where the line path puts its edges too.
+        bands, dos = _plot_data(item.record, "band_structure.json"), _plot_data(item.record, "dos.json")
+        assert bands["reference"] == dos["reference"] == "valence band maximum"
+        assert bands["zero_eV"] == dos["zero_eV"] == report["vbm_eV"] and bands["label"] == "E − E_VBM (eV)"
+        assert bands["plotted_line_vbm_eV"] == pytest.approx(0) and bands["plotted_line_cbm_eV"] == pytest.approx(1.0)
 
 
 def _check_band_structure_store(tmp_path: Path, workspace: Workspace, item: Any) -> None:

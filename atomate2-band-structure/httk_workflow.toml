@@ -58,3 +58,11 @@ product_of = "initial_structure"
 
 [workflow.collect]
 file = "collect.py"
+
+[workflow.postprocess.report]
+file = "scripts/report"
+description = "writes report.txt and report.json (band gap, band edges and their k-points, Fermi energy, number of bands)"
+
+[workflow.postprocess.plots]
+file = "scripts/plots"
+description = "band_structure.png (line mode), dos.png (uniform mesh, element-projected), band_structure_dos.png (combined)"

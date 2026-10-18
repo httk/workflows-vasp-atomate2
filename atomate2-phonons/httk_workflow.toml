@@ -94,3 +94,11 @@ product_of = "initial_structure"
 
 [workflow.collect]
 file = "collect.py"
+
+[workflow.postprocess.report]
+file = "scripts/report"
+description = "writes report.txt and report.json (imaginary modes, lowest frequency, non-analytical correction, zero-point energy, thermodynamics at 300 K)"
+
+[workflow.postprocess.plots]
+file = "scripts/plots"
+description = "phonon_band_structure.png, phonon_dos.png, phonon_band_structure_dos.png, phonon_thermodynamics.png"

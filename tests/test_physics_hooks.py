@@ -6,10 +6,14 @@ The values are checked against the fake's synthetic physics, including the compo
 orders and unit conversions the hooks apply.
 """
 
+import importlib.util
 import json
 import re
 import runpy
+import sys
+import tomllib
 from pathlib import Path, PurePosixPath
+from typing import Any
 
 import pytest
 
@@ -21,7 +25,10 @@ import numpy as np
 from httk.analyse import property_records
 from httk.atomistic import UnitcellStructureView
 from httk.core import DataRecord, FileRecord
+from httk.workflow import Workspace
 from httk.workflow.collecting import JobRecord
+from httk.workflow.packages import load_workflow_package
+from httk.workflow.postprocessing import run_postprocess_script
 
 import fake_vasp_atomate2 as fake
 from conftest import TestProfile, aluminium, configure_fake_vasp, flow_document, silicon
@@ -60,13 +67,19 @@ def phonon_document(tmp_path_factory: pytest.TempPathFactory) -> dict:
     return _document(tmp_path_factory, lambda: PhononMaker(born_maker=None, min_length=8.0).make(aluminium()))
 
 
-def _hook(tmp_path: Path, package: str, document: dict) -> dict:
-    """Run the package's hook on *document*, as the workdir ``jobflow-outputs.json`` of a finished job."""
+def _record(tmp_path: Path, package: str, document: dict) -> JobRecord:
+    """A finished job of *package* in a workspace at *tmp_path*, with *document* as its workdir ``jobflow-outputs.json``."""
 
+    Workspace.initialize(tmp_path)
     (tmp_path / "run").mkdir()
     (tmp_path / "run" / "jobflow-outputs.json").write_text(json.dumps(document), encoding="utf-8")
     declaration = json.loads((REPO_ROOT / package / "declaration.json").read_text(encoding="utf-8"))
-    record = JobRecord(
+    workflow = tomllib.loads((REPO_ROOT / package / "httk_workflow.toml").read_text(encoding="utf-8"))["workflow"]
+    payload = tmp_path / "jobs" / "job--12345678-1234-4234-8234-123456789abc"
+    payload.mkdir(parents=True)
+    job = {"id": "12345678-1234-4234-8234-123456789abc", "workflow": {"name": workflow["name"]}, "parameters": {}}
+    (payload / "job.json").write_text(json.dumps(job), encoding="utf-8")
+    return JobRecord(
         workspace_root=tmp_path,
         workspace_id="ws",
         job_id="12345678-1234-4234-8234-123456789abc",
@@ -84,7 +97,32 @@ def _hook(tmp_path: Path, package: str, document: dict) -> dict:
         children={},
         declarations={"workflow": {"declared": declaration, "observed": None}},
     )
-    return runpy.run_path(str(REPO_ROOT / package / "collect.py"))["collect"](record)
+
+
+def _hook(tmp_path: Path, package: str, document: dict) -> dict:
+    """Run the package's hook on *document*, as the workdir ``jobflow-outputs.json`` of a finished job."""
+
+    return runpy.run_path(str(REPO_ROOT / package / "collect.py"))["collect"](_record(tmp_path, package, document))
+
+
+def _postprocess(tmp_path: Path, package: str, document: dict, script: str) -> tuple[Path, str]:
+    """Run the package's postprocess *script* on *document*; return its output directory and stdout."""
+
+    record = _record(tmp_path, package, document)
+    result = run_postprocess_script(load_workflow_package(REPO_ROOT / package, register=False), script, record)
+    assert result.returncode == 0, result.stdout + result.stderr
+    return result.output_dir, result.stdout
+
+
+def _report_dir(tmp_path: Path) -> Path:
+    """The ``report`` output directory of the job ``_record`` makes in *tmp_path*."""
+
+    return tmp_path / "report" / "postprocess" / "jobs" / "job--12345678-1234-4234-8234-123456789abc" / "report"
+
+
+def _report(tmp_path: Path, package: str, document: dict) -> dict:
+    output, _ = _postprocess(tmp_path, package, document, "report")
+    return json.loads((output / "report.json").read_text(encoding="utf-8"))
 
 
 def _collect(tmp_path: Path, package: str, document: dict) -> dict:
@@ -183,6 +221,25 @@ def test_phonon_hook_converts_to_the_phonon_cell(tmp_path: Path, phonon_document
     assert integral == pytest.approx(zero_point, rel=1e-3)
     assert np.trapezoid(density, nu) == pytest.approx(3.0, rel=0.01)  # three modes in the one-atom cell
 
+    report = _report(tmp_path / "report", "atomate2-phonons", phonon_document)
+    assert report["zero_point_energy_eV_per_cell"] == pytest.approx(zero_point)
+    assert report["formula_units_per_phonon_cell"] == 1 and report["non_analytical_correction"] is False
+    at_300 = report["at_300K_per_formula_unit"]
+    assert at_300["entropy_J_per_K_mol"] == output["entropies"][output["temperatures"].index(300)]
+    # A temperature range below 300 K: no 300 K values are made up from the end point.
+    cold = json.loads(json.dumps(phonon_document))
+    for name in ("temperatures", "free_energies", "internal_energies", "entropies", "heat_capacities"):
+        cold["output"][name] = cold["output"][name][: output["temperatures"].index(200) + 1]
+    report = _report(tmp_path / "cold", "atomate2-phonons", cold)
+    assert "at_300K_per_formula_unit" not in report and "0-200 K" in report["at_300K_note"]
+    plots, _ = _postprocess(tmp_path / "plots", "atomate2-phonons", phonon_document, "plots")
+    assert {path.name for path in plots.iterdir()} == {
+        "phonon_band_structure.png",
+        "phonon_dos.png",
+        "phonon_band_structure_dos.png",
+        "phonon_thermodynamics.png",
+    }
+
 
 def test_elastic_hook_reads_the_raw_tensor(tmp_path: Path, test_profile: TestProfile) -> None:
     if not test_profile.extended:
@@ -213,6 +270,20 @@ def test_elastic_hook_keeps_only_the_tensors_of_an_unstable_fit(tmp_path: Path) 
     outputs = _hook(tmp_path, "atomate2-elastic", _elastic_document(unstable))
     assert set(outputs) == {"relaxed_structure", "elastic_tensor", "compliance_tensor", "task_document"}
     assert np.allclose(_value(outputs["elastic_tensor"]), unstable)
+
+    report = _report(tmp_path / "report", "atomate2-elastic", _elastic_document(unstable))
+    assert report["born_stable_zero_stress"] is False and min(report["stiffness_eigenvalues_GPa"]) == pytest.approx(
+        -5.0
+    )
+    assert report["max_abs_equilibrium_stress_GPa"] is None  # the document carries no equilibrium stress
+    assert "residual stress" in (_report_dir(tmp_path) / "report.txt").read_text(encoding="utf-8")
+    plots, stdout = _postprocess(tmp_path / "plots", "atomate2-elastic", _elastic_document(unstable), "plots")
+    assert {path.name for path in plots.iterdir()} == {
+        "elastic_tensor.png",
+        "youngs_modulus.png",
+        "youngs_modulus.json",
+    }
+    assert "skipped stress_strain.png" in stdout
 
 
 def test_elastic_hook_warns_about_an_asymmetric_fit(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
@@ -264,6 +335,10 @@ def test_phonon_hook_converts_per_formula_unit_for_two_formula_units(
     assert isinstance(density, dict)
     assert np.trapezoid(density["density"], density["frequencies"]) == pytest.approx(3 * len(cell), rel=0.01)
 
+    report = _report(tmp_path / "report", "atomate2-phonons", document)
+    assert report["formula_units_per_phonon_cell"] == 2
+    assert report["zero_point_energy_eV_per_cell"] == pytest.approx(_value(outputs["zero_point_energy"]))
+
 
 def test_physics_hooks_share_their_helpers() -> None:
     blocks = set()
@@ -273,3 +348,120 @@ def test_physics_hooks_share_their_helpers() -> None:
         assert match, package
         blocks.add(match.group(0))
     assert len(blocks) == 1
+
+
+def _postprocess_module(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """The shared postprocess module, imported in-process without writing bytecode into the package."""
+
+    monkeypatch.setattr(sys, "dont_write_bytecode", True)
+
+    path = REPO_ROOT / "atomate2-static" / "scripts" / "atomate2_postprocess.py"
+    spec = importlib.util.spec_from_file_location("atomate2_postprocess", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules.setdefault(spec.name, module)  # dataclasses look the module up
+    spec.loader.exec_module(module)
+    return module
+
+
+def _symmetric(voigt: np.ndarray, shear: float) -> list[list[float]]:
+    """A Voigt 6-vector as a symmetric 3x3 tensor; *shear* scales the off-diagonal (1/2 for engineering strain)."""
+
+    xx, yy, zz, yz, xz, xy = voigt
+    yz, xz, xy = shear * yz, shear * xz, shear * xy
+    return [[xx, xy, xz], [xy, yy, yz], [xz, yz, zz]]
+
+
+def test_elastic_plots_compute_directional_moduli_and_the_fit_lines(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Independent checks of youngs_modulus.json and stress_strain.json for an anisotropic, shear-coupled tensor."""
+
+    stiffness = np.array(
+        [
+            [160.0, 70.0, 60.0, 8.0, -5.0, 0.0],
+            [70.0, 150.0, 65.0, 4.0, 3.0, 0.0],
+            [60.0, 65.0, 140.0, 0.0, 6.0, 2.0],
+            [8.0, 4.0, 0.0, 50.0, 0.0, 3.0],
+            [-5.0, 3.0, 6.0, 0.0, 45.0, 1.0],
+            [0.0, 0.0, 2.0, 3.0, 1.0, 40.0],
+        ]
+    )
+    assert np.linalg.eigvalsh(stiffness).min() > 0
+    equilibrium = np.array([1.0, -0.5, 0.3, 0.2, -0.1, 0.4])  # GPa, Voigt
+    strains, stresses = [], []
+    for component in range(6):
+        for magnitude in (-0.01, -0.005, 0.005, 0.01):
+            strain = np.zeros(6)
+            strain[component] = magnitude  # engineering shear, as Voigt strains are
+            strains.append(_symmetric(strain, 0.5))
+            stresses.append(_symmetric(equilibrium + stiffness @ strain, 1.0))
+    document = {
+        "structure": aluminium().as_dict(),
+        "elastic_tensor": {"raw": stiffness.tolist()},
+        "fitting_data": {"strains": strains, "pk_stresses": stresses},
+        "eq_stress": _symmetric(equilibrium, 1.0),
+    }
+    _postprocess_module(monkeypatch)._plots_elastic(document, None, tmp_path)
+
+    # 1/E(n) = v^T S v with v = (nx², ny², nz², ny nz, nx nz, nx ny) and S the Voigt compliance.
+    youngs = json.loads((tmp_path / "youngs_modulus.json").read_text(encoding="utf-8"))
+    compliance, angles = np.linalg.inv(stiffness), np.radians(youngs["angles_deg"])
+    for plane, (first, second) in {"xy": (0, 1), "xz": (0, 2), "yz": (1, 2)}.items():
+        n = np.zeros((len(angles), 3))
+        n[:, first], n[:, second] = np.cos(angles), np.sin(angles)
+        v = np.stack(
+            [n[:, 0] ** 2, n[:, 1] ** 2, n[:, 2] ** 2, n[:, 1] * n[:, 2], n[:, 0] * n[:, 2], n[:, 0] * n[:, 1]], 1
+        )
+        expected = 1 / np.einsum("ni,ij,nj->n", v, compliance, v)
+        assert youngs["youngs_modulus_GPa"][plane] == pytest.approx(expected, rel=1e-9), plane
+
+    # Each plotted point lies on its fit line, sigma_eq + C[:, j] * strain_j.
+    data = json.loads((tmp_path / "stress_strain.json").read_text(encoding="utf-8"))
+    assert data["line_intercept_GPa"] == pytest.approx(equilibrium)
+    for column, (label, group) in enumerate(data["points"].items()):
+        assert label == ["xx", "yy", "zz", "yz", "xz", "xy"][column]
+        assert group["line_slope_GPa"] == pytest.approx(stiffness[:, column])
+        assert sorted(group["strain"]) == pytest.approx([-0.01, -0.005, 0.005, 0.01])
+        for strain, stress in zip(group["strain"], group["stress_voigt_GPa"], strict=True):
+            assert stress == pytest.approx(equilibrium + stiffness[:, column] * strain), label
+
+
+def test_relaxation_initial_structure_decodes_literal_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A literal structure input (the jobflow runner's ``kind = "value"``) is the initial structure; else, labelled."""
+
+    module = _postprocess_module(monkeypatch)
+    initial, final = silicon(), aluminium()
+    task = {"input": {"structure": final.as_dict()}}
+    literal = {"jobflow_inputs": {"structure": {"kind": "value", "value": initial.as_dict()}}}
+    job = module.Job(Path("/nonexistent"), {"parameters": literal}, None, None)
+    structure, source = module._initial_structure(job, task)
+    assert structure == initial and source == "job input"
+    structure, source = module._initial_structure(module.Job(Path("/nonexistent"), {}, None, None), task)
+    assert structure == final and source == "input of the last calculation in the task document"
+
+
+def test_full_characterization_fails_for_an_unloadable_succeeded_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A succeeded child that cannot be loaded is a failed analysis; a failed child is only listed."""
+
+    module = _postprocess_module(monkeypatch)
+    Workspace.initialize(tmp_path / "ws")
+    monkeypatch.setenv("HTTK_WORKFLOW_WORKSPACE_DIR", str(tmp_path / "ws"))
+    parent = tmp_path / "parent"
+    (parent / "data").mkdir(parents=True)
+    (parent / "job.json").write_text(json.dumps({"workflow": {"name": "atomate2.full-characterization"}}))
+    parts = {
+        "elastic": {"kind": "succeeded", "job_id": "00000000-0000-4000-8000-000000000000"},
+        "dielectric": {"kind": "failed", "job_id": "x", "failure": {"code": "c", "message": "m"}},
+    }
+    (parent / "data" / "characterization.json").write_text(json.dumps({"parts": parts, "decisions": {}}))
+    job = module.Job.at(parent)
+    for script in ("report", "plots"):
+        (tmp_path / script).mkdir()
+        with pytest.raises(module.AnalysisError, match="elastic load"):
+            module._run(script, job, tmp_path / script)
+    report = json.loads((tmp_path / "report" / "report.json").read_text(encoding="utf-8"))
+    assert report["failed_analyses"] == ["elastic load"]
+    assert report["children"]["dielectric"]["state"] == "failed (c: m)"

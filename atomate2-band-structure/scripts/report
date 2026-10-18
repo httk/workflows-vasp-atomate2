@@ -1,0 +1,10 @@
+#!/usr/bin/env python3
+"""Write report.json and report.txt of an atomate2 job (see atomate2_postprocess.py)."""
+
+import sys
+
+sys.dont_write_bytecode = True  # never write into the package directory
+
+from atomate2_postprocess import main
+
+raise SystemExit(main("report"))

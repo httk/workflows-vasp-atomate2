@@ -87,3 +87,23 @@ def test_plugin_manifest_lists_exactly_the_package_directories() -> None:
 def test_structure_energy_collect_hooks_are_identical() -> None:
     hooks = {(REPO_ROOT / directory / "collect.py").read_bytes() for directory in _STRUCTURE_ENERGY}
     assert len(hooks) == 1
+
+
+@pytest.mark.parametrize("directory", _DIRECTORIES + _COMPOSITE)
+def test_package_declares_the_shared_postprocess_scripts(directory: str) -> None:
+    provider = load_workflow_package(REPO_ROOT / directory, register=False)
+    assert {name: script["file"] for name, script in provider.postprocess_scripts.items()} == {
+        "report": "scripts/report",
+        "plots": "scripts/plots",
+    }
+    for name in ("report", "plots"):
+        # Committed modes come from git: the entry points must be 755.
+        assert (REPO_ROOT / directory / "scripts" / name).stat().st_mode & 0o777 == 0o755, name
+
+
+def test_postprocess_scripts_are_identical_in_every_package() -> None:
+    """``make sync-scripts`` copies them from atomate2-static."""
+
+    for name in ("report", "plots", "atomate2_postprocess.py"):
+        copies = {(REPO_ROOT / directory / "scripts" / name).read_bytes() for directory in _DIRECTORIES + _COMPOSITE}
+        assert len(copies) == 1, name

@@ -18,12 +18,22 @@ pytest.importorskip("httk.analyse")
 pytest.importorskip("phonopy")
 
 from httk.atomistic import UnitcellStructureView
-from httk.workflow import Workspace, collect
+from httk.workflow import Workspace, collect, job_records
+from httk.workflow.collecting import JobRecord
 from httk.workflow.introspection import resolve_job
+from httk.workflow.packages import load_workflow_package
+from httk.workflow.postprocessing import run_postprocess_script
 from pymatgen.core import Lattice, Structure
 
 from conftest import FAKE_VASP, TestProfile, aluminium, silicon
-from test_wrappers_end_to_end import _failure, _installed_plugin, _run  # noqa: F401  (autouse fixture)
+from test_wrappers_end_to_end import (  # noqa: F401  (autouse fixture)
+    _FIGURES,
+    _failure,
+    _installed_plugin,
+    _plots,
+    _report,
+    _run,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -80,6 +90,72 @@ def _characterize(
     return workspace, job_id, children
 
 
+def _record(workspace: Workspace, job_id: str) -> JobRecord:
+    """The record of a finished job, succeeded or failed."""
+
+    return next(record for record in job_records(workspace, states=("succeeded", "failed")) if record.job_id == job_id)
+
+
+#: Files the parent's ``plots`` script writes for each child label, besides the child's report.
+_CHILD_FIGURES = {
+    "relax": {"relaxation.png", "relaxation.json", "relaxed.cif", "relaxed.POSCAR"},
+    **{label: _FIGURES[f"atomate2-{label.replace('_', '-')}"] for label in ("band_structure", "dielectric", "elastic")},
+    "phonons": _FIGURES["atomate2-phonons"],
+}
+
+
+def _check_postprocess(workspace: Workspace, job_id: str, children: dict, succeeded: set[str], case: str) -> None:
+    """The parent's report summarizes its children's documents; its plots script runs every succeeded child's."""
+
+    directory = "atomate2-full-characterization"
+    report = _report(directory, _record(workspace, job_id))
+    assert {label for label, child in report["children"].items() if child["state"] == "succeeded"} == succeeded
+    assert {child["job_id"] for child in report["children"].values()} == {doc["id"] for _, doc in children.values()}
+    if "band_structure" in succeeded:
+        uniform = _output(children["band_structure"][0])["uniform"]
+        # The headline pair is the uniform mesh's.
+        assert report["band_gap_eV"] == uniform["output"]["bandgap"]
+        assert report["direct_gap"] == uniform["calcs_reversed"][0]["output"]["is_gap_direct"]
+    if "elastic" in succeeded:
+        elastic = _output(children["elastic"][0])
+        derived = elastic["derived_properties"]
+        assert report["max_abs_equilibrium_stress_GPa"] == pytest.approx(np.abs(elastic["eq_stress"]).max())
+        assert report["max_abs_equilibrium_stress_GPa"] > 0
+        # atomate2 derives its moduli from the IEEE-rotated tensor, the report from the raw one: invariants agree.
+        assert report["bulk_modulus_hill_GPa"] == pytest.approx(derived["k_vrh"])
+        assert report["shear_modulus_hill_GPa"] == pytest.approx(derived["g_vrh"])
+    if "phonons" in succeeded:
+        phonons = _output(children["phonons"][0])
+        units = Structure.from_dict(phonons["phonon_bandstructure"]["structure"]).composition
+        per_cell = units.get_reduced_composition_and_factor()[1] / (6.02214076e23 * 1.602176634e-19)
+        assert report["zero_point_energy_eV_per_phonon_cell"] == pytest.approx(phonons["free_energies"][0] * per_cell)
+        # Only the polar insulator's phonons get nonzero Born charges, so only there does atomate2 apply NAC.
+        (path,) = (workspace.root / "postprocess").glob("**/report/phonons/report.json")
+        nac = json.loads(path.read_text(encoding="utf-8"))["non_analytical_correction"]
+        assert nac is (case == "polar_insulator")
+    if "dielectric" in succeeded:
+        calculation = _output(children["dielectric"][0])["calcs_reversed"][0]["output"]
+        assert report["epsilon_electronic_average"] == pytest.approx(np.trace(calculation["epsilon_static"]) / 3)
+    files = _plots(directory, _record(workspace, job_id))
+    assert files == succeeded
+    output = workspace.root / "postprocess"
+    for label in succeeded:
+        (path,) = output.glob(f"**/plots/{label}")
+        assert {child.name for child in path.iterdir()} == {"report.json", "report.txt", *_CHILD_FIGURES[label]}, label
+    if case == "metal":
+        # A succeeded child whose analysis fails: the others still run, then both scripts fail naming it.
+        for name in ("data/jobflow/jobflow-outputs.json", "run/jobflow-outputs.json"):
+            source = children["elastic"][0] / name
+            source.rename(source.with_suffix(".hidden"))
+        package = load_workflow_package(REPO_ROOT / directory, register=False)
+        for script in ("report", "plots"):
+            result = run_postprocess_script(package, script, _record(workspace, job_id))
+            assert result.returncode == 1 and "elastic report" in result.stderr, script
+            assert (result.output_dir / "relax" / "report.json").is_file(), script
+        broken = json.loads((result.output_dir.parent / "report" / "report.json").read_text(encoding="utf-8"))
+        assert broken["failed_analyses"] == ["elastic report"]
+
+
 def _relaxes_cell(run: dict[str, Any]) -> bool:
     """Whether one fake VASP run was a relaxation of the cell."""
 
@@ -97,6 +173,10 @@ def test_relax_failure_stops_the_characterization(tmp_path: Path) -> None:
     failure = _failure(workspace, job_id)
     assert resolve_job(workspace, job_id).state == "failed" and failure["code"] == "relax_failed"
     assert set(children) == {"relax"}
+    # No characterization.json: the report script says so and fails.
+    package = load_workflow_package(REPO_ROOT / "atomate2-full-characterization", register=False)
+    result = run_postprocess_script(package, "report", _record(workspace, job_id))
+    assert result.returncode == 1 and "characterization.json" in result.stderr
 
 
 def test_cif_input_is_staged_as_a_poscar(tmp_path: Path) -> None:
@@ -219,3 +299,4 @@ def test_full_characterization(tmp_path: Path, case: str, test_profile: TestProf
         declaration = json.loads((package / "declaration.json").read_text(encoding="utf-8"))
         outputs = collected[children[label][1]["id"]].outputs
         assert set(outputs) == {output["name"] for output in declaration["outputs"]}, label
+    _check_postprocess(workspace, job_id, children, succeeded, case)

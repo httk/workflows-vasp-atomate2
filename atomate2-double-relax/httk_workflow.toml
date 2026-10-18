@@ -44,3 +44,11 @@ product_of = "initial_structure"
 
 [workflow.collect]
 file = "collect.py"
+
+[workflow.postprocess.report]
+file = "scripts/report"
+description = "writes report.txt and report.json (space group, lattice before and after, energy, forces, stress, band gap), relaxed.cif and relaxed.POSCAR"
+
+[workflow.postprocess.plots]
+file = "scripts/plots"
+description = "relaxation.png: energy per atom and maximum force per ionic step of the calculation(s) in the task document"

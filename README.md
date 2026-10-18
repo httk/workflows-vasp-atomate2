@@ -300,6 +300,57 @@ A run's input edges come only from a provenance document the caller supplies,
 as for any *httk₂* job. Without one, the `product_of` links to
 `initial_structure` are reported as unlinked.
 
+## Postprocessing
+
+Every package declares the same two postprocess scripts, so one command covers
+a workspace of atomate2 jobs:
+
+```console
+httk workflow postprocess --script report
+httk workflow postprocess --script plots JOB
+```
+
+`report` writes `report.json` (plain JSON numbers, units in the key names) and
+`report.txt`; `plots` writes PNG figures (150 dpi), plus the plotted data as
+JSON where it is computed rather than read. Both write into the job's
+postprocess directory, never into the job. A figure whose data the documents
+lack is skipped with a line saying so. A script exits 1, with a message, when
+the flow output is missing or unreadable. The jobflow child jobs, which a
+command without job selectors also visits, exit 0 silently without output.
+
+| Package | `report` | `plots` |
+| --- | --- | --- |
+| `atomate2.static` | energy (total and per atom), band gap, VBM/CBM, Fermi level, total magnetization, space group and lattice | `dos.png` (+ `dos.json`, its energy zero): total and element-projected DOS from the run's `vasprun.xml` |
+| `atomate2.relax`, `.tight-relax`, `.double-relax` | formula; space group and lattice (a, b, c, angles, volume) of the input and relaxed structures (and where the input came from) and the relative volume change; energy, maximum force, stress (kbar), band gap; also `relaxed.cif` and `relaxed.POSCAR` | `relaxation.png` (+ `relaxation.json`): energy per atom and maximum force per ionic step |
+| `atomate2.band-structure` | band gap, directness, transition and VBM/CBM energies of the uniform mesh; the same of the line path as `line_*`, with the edges' k-point labels and coordinates; Fermi energies, number of bands | `band_structure.png`, `dos.png` (uniform mesh), `band_structure_dos.png`; `band_structure.json` and `dos.json` record their energy zero |
+| `atomate2.dielectric` | electronic (ε∞), ionic and static tensors with eigenvalues and averages, refractive index √(mean ε∞), Born effective charges per site with species, trace and their sum, piezoelectric tensor (C/m², Voigt `xx yy zz yz xz xy`, relaxed-ion) | `dielectric.png` (electronic and ionic parts along the principal axes of the static tensor), `born_charges.png` |
+| `atomate2.elastic` | C_ij and S_ij, stiffness eigenvalues and the zero-stress Born criterion (C positive definite) next to the largest equilibrium stress, Voigt/Reuss/Hill bulk and shear moduli, Hill Young's modulus and Poisson ratio, universal anisotropy, atomate2's Debye temperature and sound velocities | `elastic_tensor.png`, `youngs_modulus.png` (+ `.json`: directional E in the xy, xz and yz planes), `stress_strain.png` (+ `.json`: the fit's data and the fitted C_ij) |
+| `atomate2.phonons` | imaginary modes, the lowest frequency and its q-point, whether atomate2 applied the non-analytical correction (Born charges and ε∞ given, not all charges zero), zero-point energy, F, U, S and C_v at 300 K (only when 300 K is sampled), supercell matrix | `phonon_band_structure.png`, `phonon_dos.png`, `phonon_band_structure_dos.png`, `phonon_thermodynamics.png` |
+| `atomate2.full-characterization` | a combined summary (relaxed structure, uniform band gap and directness, ε∞ and ε0, Hill moduli, phonon stability and zero-point energy), the decisions of `characterization.json` and each child's state; each succeeded child's report in `<label>/` | each succeeded child's report and figures in `<label>/` (`relax/`, `band_structure/`, `elastic/`, `dielectric/`, `phonons/`) |
+
+Conventions: the values are the documents' where `collect.py` reads them. The
+elastic tensor is `elastic_tensor.raw`, in the Cartesian frame of the relaxed
+structure, symmetrized as when collected. The phonon values refer to phonopy's
+primitive cell (`phonon_bandstructure.structure`); the zero-point energy is in
+eV per that cell, as collected, and the 300 K values and the thermodynamics
+figure are in atomate2's units, J/mol and J/(K mol) per formula unit. Space
+groups use atomate2's `SYMPREC` (the job's or workspace's `atomate2.symprec`
+when set). A double relaxation's task document holds only its second
+calculation, so its ionic steps are that calculation's. The static DOS is read
+from the `vasprun.xml(.gz)` of the atomate2 job the document's `dir_name` names.
+The electronic figures share one energy zero, which their axis labels name: the
+valence band maximum of a gapped system (of the uniform mesh, for
+`atomate2.band-structure`), else the Fermi level. The elastic stability field
+applies the Born criterion at zero stress; it is meaningful only when the
+reported residual stress is negligible. For `atomate2.full-characterization`,
+a succeeded child whose analysis fails does not stop the others, but the script
+then exits 1 naming it (`failed_analyses` in the report); failed children are
+listed, not fatal.
+
+The scripts are one shared module, `scripts/atomate2_postprocess.py`, and two
+entry points, identical in every package (a test pins them). Edit them in
+`atomate2-static/scripts/` and run `make sync-scripts`.
+
 ## Requirements
 
 - The next *httk-workflow* release after 2.1.1. The packages do not run at all
@@ -338,7 +389,8 @@ site.
 The fake's synthetic physics (cosine bands with a 1 eV gap, first- and
 second-neighbour spring forces, fixed dielectric tensors, and the stress of fixed cubic elastic
 constants when the workspace setting `fake_vasp.reference_a` names the
-reference lattice parameter) lets the tests check the collected values.
+reference lattice parameter) lets the tests check the collected values. The
+end-to-end tests also run both postprocess scripts on the jobs they finished.
 
 To also run `atomate2.static` on real VASP, set both
 `HTTK_TEST_VASP_COMMAND` (the VASP program) and `HTTK_TEST_PMG_VASP_PSP_DIR`

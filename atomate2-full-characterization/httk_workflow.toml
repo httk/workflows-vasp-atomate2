@@ -38,3 +38,11 @@ product_of = "initial_structure"
 
 [workflow.collect]
 file = "collect.py"
+
+[workflow.postprocess.report]
+file = "scripts/report"
+description = "writes report.txt and report.json (combined summary, decisions, child states) and each succeeded child's report under <label>/"
+
+[workflow.postprocess.plots]
+file = "scripts/plots"
+description = "every succeeded child's report and figures under <label>/ (relax/, band_structure/, elastic/, dielectric/, phonons/)"

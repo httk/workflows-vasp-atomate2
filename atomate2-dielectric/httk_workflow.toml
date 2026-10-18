@@ -65,3 +65,11 @@ product_of = "initial_structure"
 
 [workflow.collect]
 file = "collect.py"
+
+[workflow.postprocess.report]
+file = "scripts/report"
+description = "writes report.txt and report.json (electronic, ionic and static dielectric tensors, refractive index, Born effective charges, piezoelectric tensor)"
+
+[workflow.postprocess.plots]
+file = "scripts/plots"
+description = "dielectric.png (electronic and ionic permittivity per principal direction), born_charges.png (per-site diagonal and trace/3)"
