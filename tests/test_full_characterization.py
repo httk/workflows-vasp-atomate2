@@ -1,0 +1,221 @@
+"""atomate2.full-characterization runs the other packages as child jobs, end to end with the fake VASP.
+
+The parent's children are found from their ``job.json`` ``parent`` member, and each fake
+VASP run is attributed to the child whose flow ran it through the same chain, so the
+test sees which calculations each child ran.
+"""
+
+import json
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pytest
+
+pytest.importorskip("atomate2")
+pytest.importorskip("httk.atomistic")
+pytest.importorskip("httk.analyse")
+pytest.importorskip("phonopy")
+
+from httk.atomistic import UnitcellStructureView
+from httk.workflow import Workspace, collect
+from httk.workflow.introspection import resolve_job
+from pymatgen.core import Lattice, Structure
+
+from conftest import FAKE_VASP, TestProfile, aluminium, silicon
+from test_wrappers_end_to_end import _failure, _installed_plugin, _run  # noqa: F401  (autouse fixture)
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def silicon_carbide() -> Structure:
+    """Conventional zincblende SiC, 8 atoms, a = 4.36 Angstrom: a polar insulator to the fake."""
+
+    return Structure.from_spacegroup("F-43m", Lattice.cubic(4.36), ["Si", "C"], [[0, 0, 0], [0.25, 0.25, 0.25]])
+
+
+# Case -> (structure, the fake's elastic reference lattice parameter, other workspace settings, normal profile?).
+# The reference is a little off the structure's own, so the relaxed cell carries a stress.
+_CASES = {
+    # Non-default atomate2 settings, which the parent's own decisions must use too.
+    "metal": (aluminium, 4.00, {"atomate2.bandgap_tol": 0.5, "atomate2.symprec": 0.01}, True),
+    # Isotropic, species-dependent Born charges that survive atomate2's symmetrization.
+    "polar_insulator": (silicon_carbide, 4.33, {"fake_vasp.ionic_born": 1.5}, False),
+    # Only the dielectric run sets LEPSILON.
+    "dielectric_failed": (silicon, 5.40, {"fake_vasp.fail_on": "LEPSILON"}, False),
+    "magnetic_metal": (aluminium, 4.00, {"fake_vasp.magnetization": 1.0}, False),
+}
+
+
+def _jobs(workspace: Workspace) -> dict[str, tuple[Path, dict[str, Any]]]:
+    """Every job of the workspace: job id -> (job directory, job.json)."""
+
+    jobs = {}
+    for path in workspace.root.glob("jobs/*/*/job.json"):
+        document = json.loads(path.read_text(encoding="utf-8"))
+        jobs[document["id"]] = (path.parent, document)
+    return jobs
+
+
+def _characterize(
+    tmp_path: Path, structure: object, settings: dict[str, object]
+) -> tuple[Workspace, str, dict[str, tuple[Path, dict[str, Any]]]]:
+    """Run the parent until idle; return the workspace, its job id and its children by label."""
+
+    # The workspace names no usable VASP: the parent's job parameter must reach every child.
+    workspace, job_id = _run(
+        tmp_path,
+        "atomate2-full-characterization",
+        "/nonexistent/vasp_std",
+        timeout=3600.0,
+        structure=structure,
+        settings=settings,
+        parameters={"vasp.command": FAKE_VASP},
+    )
+    children = {
+        document["tag"]: (path, document)
+        for path, document in _jobs(workspace).values()
+        if (document.get("parent") or {}).get("job_id") == job_id
+    }
+    return workspace, job_id, children
+
+
+def _relaxes_cell(run: dict[str, Any]) -> bool:
+    """Whether one fake VASP run was a relaxation of the cell."""
+
+    return run["incar"].get("ISIF") == 3 and run["incar"].get("NSW", 0) > 1
+
+
+def _output(directory: Path) -> dict[str, Any]:
+    """The flow output a jobflow job published."""
+
+    return json.loads((directory / "data" / "jobflow" / "jobflow-outputs.json").read_text(encoding="utf-8"))["output"]
+
+
+def test_relax_failure_stops_the_characterization(tmp_path: Path) -> None:
+    workspace, job_id, children = _characterize(tmp_path, aluminium(), {"fake_vasp.fail_on": "NSW"})
+    failure = _failure(workspace, job_id)
+    assert resolve_job(workspace, job_id).state == "failed" and failure["code"] == "relax_failed"
+    assert set(children) == {"relax"}
+
+
+def test_cif_input_is_staged_as_a_poscar(tmp_path: Path) -> None:
+    """``--input-from structure Si.cif`` passes a loaded structure, which is staged as the POSCAR the run reads."""
+
+    import httk.core
+    from httk.workflow.scaffold import new_job
+
+    cif = tmp_path / "Si.cif"
+    silicon().to(filename=str(cif))
+    workspace = Workspace.initialize(tmp_path / "workspace")
+    new_job(workspace, "atomate2.full-characterization", inputs={"structure": httk.core.load(cif)}, install=True)
+    (poscar,) = workspace.root.glob("jobs/*/*/files/POSCAR")
+    assert Structure.from_file(poscar).matches(Structure.from_file(cif))
+
+
+@pytest.mark.parametrize("case", tuple(_CASES))
+def test_full_characterization(tmp_path: Path, case: str, test_profile: TestProfile) -> None:
+    structure, reference, settings, normal = _CASES[case]
+    if not normal and not test_profile.extended:
+        pytest.skip("extended profile only (HTTK_TEST_PROFILE=extended)")
+    workspace, job_id, children = _characterize(tmp_path, structure(), {"fake_vasp.reference_a": reference, **settings})
+    insulator = case in ("polar_insulator", "dielectric_failed")
+    dielectric_failed = case == "dielectric_failed"
+    magnetic = case == "magnetic_metal"
+    if dielectric_failed:
+        failure = _failure(workspace, job_id)
+        assert failure["code"] == "characterization_incomplete", failure
+        assert "dielectric" in failure["message"]
+    else:
+        assert resolve_job(workspace, job_id).state == "succeeded", _failure(workspace, job_id)
+
+    expected = {"relax", "band_structure", "elastic", "phonons", *({"dielectric"} if insulator else ())}
+    succeeded = expected - ({"dielectric"} if dielectric_failed else set())
+    assert set(children) == expected
+    states = {label: resolve_job(workspace, document["id"]).state for label, (_path, document) in children.items()}
+    assert {label for label, state in states.items() if state == "succeeded"} == succeeded
+
+    # Each fake VASP run, attributed to the child whose flow's job ran it.
+    label_of = {document["id"]: label for label, (_path, document) in children.items()}
+    runs: dict[str, list[dict[str, Any]]] = {label: [] for label in children}
+    for log in workspace.root.glob("jobs/*/*/run/**/fake-vasp-invocations.jsonl"):
+        directory = log.relative_to(workspace.root).parts[:3]
+        document = json.loads(workspace.root.joinpath(*directory, "job.json").read_text(encoding="utf-8"))
+        runs[label_of[document["parent"]["job_id"]]] += [json.loads(line) for line in log.read_text().splitlines()]
+    # One double relaxation, with TightRelaxMaker's INCAR; no other child relaxes the cell.
+    assert len(runs["relax"]) == 2
+    for run in runs["relax"]:
+        assert (run["incar"]["ENCUT"], run["incar"]["EDIFF"], run["incar"]["EDIFFG"]) == pytest.approx(
+            (700, 1e-7, -0.001)
+        )
+        assert (run["incar"]["ISIF"], run["incar"]["NSW"]) == (3, 99)
+    # Only relaxations move the cell (ISIF 3 with ionic steps): every other run keeps it or is a static.
+    assert not [label for label in children if label != "relax" for run in runs[label] if _relaxes_cell(run)]
+    assert len(runs["band_structure"]) == 3
+    assert len(runs.get("dielectric", ())) == int(insulator)
+
+    relax = _output(children["relax"][0])["output"]
+    phonons = _output(children["phonons"][0])
+    # Phonons ran only its displacements: no relaxation, no static energy run, no Born charge run.
+    assert len(runs["phonons"]) == len(phonons["jobdirs"]["displacements_job_dirs"])
+    assert phonons["jobdirs"]["optimization_run_job_dir"] is None
+    assert phonons["jobdirs"]["static_run_job_dir"] is None
+    assert phonons["jobdirs"]["born_run_job_dir"] is None
+    composition = Structure.from_dict(relax["structure"]).composition
+    formula_units = composition.num_atoms / composition.reduced_composition.num_atoms
+    assert phonons["total_dft_energy"] == pytest.approx(relax["energy"] / formula_units)
+    # The elastic fit used the relaxation's stress (atomate2 stores it in GPa, tension positive).
+    elastic = _output(children["elastic"][0])
+    assert np.any(np.asarray(relax["stress"]))
+    assert np.asarray(elastic["eq_stress"]) == pytest.approx(-0.1 * np.asarray(relax["stress"]))
+
+    plan_activation = children["band_structure"][1]["parent"]["activation_id"]
+    assert children["elastic"][1]["parent"]["activation_id"] == plan_activation
+    # Phonons waits for the dielectric child only when it takes its Born charges.
+    phonons_later = insulator and not magnetic
+    assert (children["phonons"][1]["parent"]["activation_id"] != plan_activation) is phonons_later
+    if insulator:
+        assert children["dielectric"][1]["parent"]["activation_id"] == plan_activation
+    given = children["phonons"][1]["parameters"]
+    assert given.get("use_symmetrized_structure") == ("primitive" if magnetic else None)
+    if case == "polar_insulator":
+        # The dielectric's tensors reach phonons, which applies the non-analytical correction with them:
+        # isotropic charges survive atomate2's symmetrization, site by site in the phonon cell's order.
+        calculation = _output(children["dielectric"][0])["calcs_reversed"][0]["output"]
+        assert given["jobflow_inputs"]["born"]["value"] == calculation["outcar"]["born"]
+        assert given["jobflow_inputs"]["epsilon_static"]["value"] == calculation["epsilon_static"]
+        dielectric_cell = Structure.from_dict(calculation["structure"])
+        phonon_cell = Structure.from_dict(phonons["structure"])
+        assert [site.species_string for site in phonon_cell] == [site.species_string for site in dielectric_cell]
+        assert np.asarray(phonons["born"]) == pytest.approx(np.asarray(calculation["outcar"]["born"]), abs=1e-6)
+        assert np.any(np.asarray(phonons["born"]))
+    else:
+        # No Born charges at all: none given, and none computed.
+        assert given["born_maker"] is None and "born" not in given["jobflow_inputs"]
+        assert phonons["born"] is None
+
+    parent_directory = _jobs(workspace)[job_id][0]
+    characterization = json.loads((parent_directory / "data" / "characterization.json").read_text(encoding="utf-8"))
+    decisions = characterization["decisions"]
+    assert {label for label, part in characterization["parts"].items() if part["kind"] == "succeeded"} == succeeded
+    assert (decisions["insulator"], decisions["magnetic"]) == (insulator, magnetic)
+    if case == "metal":
+        # The parent read the workspace's atomate2 settings, as the children do.
+        assert (decisions["band_gap_tolerance"], decisions["symprec"]) == (0.5, 0.01)
+    if magnetic:
+        assert any(Structure.from_dict(relax["structure"]).site_properties["magmom"])
+
+    # The parent yields its standardized structure and links to its children's runs; each succeeded
+    # child is collected under its own package.
+    collected = {item.record.job_id: item for item in collect(workspace, fail_fast=True, allow_job_collector=True)}
+    if dielectric_failed:
+        # A failed job is not collected, the parent included; its succeeded children are.
+        assert job_id not in collected and children["dielectric"][1]["id"] not in collected
+    else:
+        assert isinstance(collected[job_id].outputs["standardized_structure"], UnitcellStructureView)
+        assert {label for label, _run_id in collected[job_id].child_runs} == expected
+    for label in succeeded:
+        package = REPO_ROOT / ("atomate2-double-relax" if label == "relax" else f"atomate2-{label.replace('_', '-')}")
+        declaration = json.loads((package / "declaration.json").read_text(encoding="utf-8"))
+        outputs = collected[children[label][1]["id"]].outputs
+        assert set(outputs) == {output["name"] for output in declaration["outputs"]}, label

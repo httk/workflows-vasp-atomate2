@@ -26,7 +26,17 @@ structured so that atomate2's physics flows give recognizable results:
 A relaxation (NSW > 1) nudges the last atom each ionic step; the last step's
 structure is the CONTCAR. Each invocation appends one JSON line to
 ``fake-vasp-invocations.jsonl`` so tests can assert how it was launched and
-which POTCARs (by TITEL) it was given.
+which POTCARs (by TITEL) it was given. When ``HTTK_FAKE_VASP_FAIL_ON`` names an
+INCAR tag, a run whose INCAR sets that tag to a true or nonzero value exits with
+status 1 after logging, writing nothing else: a crashed VASP, for failure tests.
+When ``HTTK_FAKE_VASP_IONIC_BORN`` names a charge q, the Born charges are instead
+isotropic, q on the sites of the first species and the balancing
+-q n_first / n_rest on the others (the acoustic sum rule), as the site symmetry
+of rocksalt or zincblende requires, and relaxations leave the atoms in place: the
+nudge would leave the polar crystal off its spring equilibrium, with imaginary
+modes that phonopy's non-analytical correction cannot take. When
+``HTTK_FAKE_VASP_MAGNETIZATION`` names a moment, the OUTCAR reports it on every
+site, which emmet attaches to the structure.
 
 Use it as the command atomate2 runs::
 
@@ -65,6 +75,14 @@ def born_charges(nions: int) -> list[list[list[float]]]:
     """Born charges as printed: ion n (1-based), row a, column b is n + 0.1(a+1) + 0.01(b+1)."""
 
     return [[[n + 0.1 * (a + 1) + 0.01 * (b + 1) for b in range(3)] for a in range(3)] for n in range(1, nions + 1)]
+
+
+def ionic_born_charges(structure: Structure, charge: float) -> list[list[list[float]]]:
+    """Isotropic Born charges: *charge* on the first species' sites, the balancing charge on the others."""
+
+    first = [site.specie == structure[0].specie for site in structure]
+    other = -charge * sum(first) / (len(structure) - sum(first))
+    return [(np.eye(3) * (charge if is_first else other)).tolist() for is_first in first]
 
 
 def piezo(ionic: bool) -> list[list[float]]:
@@ -204,7 +222,7 @@ def _stress(structure: Structure) -> list[list[float]]:
     return (-10.0 * cauchy).tolist()  # GPa -> kbar, VASP's sign
 
 
-def _lepsilon_outcar(nions: int, ionic: bool) -> list[str]:
+def _lepsilon_outcar(charges: list[list[list[float]]], ionic: bool) -> list[str]:
     """The LEPSILON blocks of an OUTCAR, with the headers pymatgen's ``Outcar`` reads."""
 
     dashes = " " + "-" * 60
@@ -214,7 +232,7 @@ def _lepsilon_outcar(nions: int, ionic: bool) -> list[str]:
     lines += ["               XX          YY          ZZ          XY          YZ          ZX", dashes]
     lines += [f"  {axis}" + "".join(f"{v:12.5f}" for v in row) for axis, row in zip("xyz", piezo(False))]
     lines += [dashes, "", " BORN EFFECTIVE CHARGES (including local field effects) (in |e|, cumulative output)", dashes]
-    for n, charge in enumerate(born_charges(nions), start=1):
+    for n, charge in enumerate(charges, start=1):
         lines.append(f" ion {n:4d}")
         lines += [f"    {a + 1}" + "".join(f"{v:12.5f}" for v in row) for a, row in enumerate(charge)]
     lines += [dashes, ""]
@@ -241,6 +259,9 @@ def main() -> int:
         env = {k: os.environ.get(k) for k in ("ATOMATE2_VASP_CMD", "PMG_VASP_PSP_DIR")}
         record = {"argv": sys.argv, "env": env, "incar": dict(incar), "potcar_titels": [p.TITEL for p in potcar]}
         log.write(json.dumps(record, default=str) + "\n")
+    if incar.get(os.environ.get("HTTK_FAKE_VASP_FAIL_ON", "")):
+        print("fake_vasp_atomate2: failing on request (HTTK_FAKE_VASP_FAIL_ON)", file=sys.stderr)
+        return 1
 
     counts = [structure.composition[el] for el in poscar.site_symbols]
     nelect = sum(p.zval * int(n) for p, n in zip(potcar, counts, strict=True))
@@ -253,6 +274,7 @@ def main() -> int:
     nions = 1 if nsw <= 1 else min(3, nsw - 1)  # fewer steps than NSW: an ionically converged relaxation
     nscf = max(2, min(3, nelm - 1))  # fewer steps than NELM: electronically converged
     metallic = any(element.is_metal for element in structure.composition.elements)
+    ionic_born = os.environ.get("HTTK_FAKE_VASP_IONIC_BORN")
 
     kpoints = Kpoints.from_file("KPOINTS") if Path("KPOINTS").is_file() else None
     kpts, weights, generation = _kpoints(kpoints)
@@ -305,7 +327,7 @@ def main() -> int:
     ]
     oszicar = []
     for step in range(nions):
-        if nsw > 1:
+        if nsw > 1 and not ionic_born:
             structure = structure.copy()
             structure.translate_sites([len(structure) - 1], [0.001, 0.001, 0.001])
         e = -5.0 * len(structure) - 0.01 * step
@@ -366,10 +388,21 @@ def main() -> int:
             f"  energy  without entropy= {e:18.8f}  energy(sigma->0) = {e:18.8f}",
         ]
     if lepsilon:
-        outcar += _lepsilon_outcar(len(structure), ibrion in (7, 8))
+        charges = ionic_born_charges(structure, float(ionic_born)) if ionic_born else born_charges(len(structure))
+        outcar += _lepsilon_outcar(charges, ibrion in (7, 8))
+    moment = float(os.environ.get("HTTK_FAKE_VASP_MAGNETIZATION") or 0.0)
+    if moment:
+        dashes = "-" * 50
+        outcar += [" magnetization (x)", "", "# of ion       s       p       d       tot", dashes]
+        outcar += [f"    {n:d}        0.000   0.000 {moment:7.3f} {moment:7.3f}" for n in range(1, len(structure) + 1)]
+        outcar += [
+            dashes,
+            f"tot          0.000   0.000 {moment * len(structure):7.3f} {moment * len(structure):7.3f}",
+            "",
+        ]
     outcar += [
         f" E-fermi : {EFERMI:10.4f}     XC(G=0):  -1.0000     alpha+bet : -1.0000",
-        f" number of electron {nelect:15.7f} magnetization {0.0:15.7f}",
+        f" number of electron {nelect:15.7f} magnetization {moment * len(structure):15.7f}",
         " General timing and accounting informations for this job:",
         "                  Total CPU time used (sec):        1.000",
         "                            User time (sec):        1.000",

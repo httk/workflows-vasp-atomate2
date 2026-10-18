@@ -20,11 +20,29 @@ description = "null skips the Born effective charge calculation (atomate2 runs i
 type = "string"
 description = "\"primitive\" runs on the standardized primitive cell, for which the q-point path and its labels are meaningful (atomate2's default: the cell as given)."
 
+[workflow.parameters.bulk_relax_maker]
+description = "null skips the bulk relaxation, for a structure that is already relaxed with tight settings (atomate2 runs a tight double relaxation by default)."
+
 [workflow.inputs.structure]
 port = "structure"
 role = "initial_structure"
 entry_type = "structures"
 required = true
+
+[workflow.inputs.born]
+port = "born"
+required = false
+description = "The Born effective charges of the structure's sites (one 3x3 matrix per site, in its site order), as atomate2's dielectric task document holds them. Given with epsilon_static, they replace the Born effective charge calculation."
+
+[workflow.inputs.epsilon_static]
+port = "epsilon_static"
+required = false
+description = "The ion-clamped dielectric tensor (3x3) of the structure, as atomate2's dielectric task document holds it. Given with born, they replace the Born effective charge calculation."
+
+[workflow.inputs.total_dft_energy_per_formula_unit]
+port = "total_dft_energy_per_formula_unit"
+required = false
+description = "The total DFT energy of the structure per formula unit, in eV. Given, it replaces the static energy calculation."
 
 [workflow.outputs.relaxed_structure]
 entry_type = "structures"

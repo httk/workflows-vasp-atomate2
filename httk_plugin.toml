@@ -1,6 +1,6 @@
 [plugin]
 name = "workflows-vasp-atomate2"
-description = "atomate2's VASP Makers as httk workflows (static, relax, tight relax, double relax, band structure, dielectric, elastic, phonons)"
+description = "atomate2's VASP Makers as httk workflows (static, relax, tight relax, double relax, band structure, dielectric, elastic, phonons, and a full characterization composing them)"
 workflows = [
     "atomate2-static",
     "atomate2-relax",
@@ -10,4 +10,5 @@ workflows = [
     "atomate2-dielectric",
     "atomate2-elastic",
     "atomate2-phonons",
+    "atomate2-full-characterization",
 ]

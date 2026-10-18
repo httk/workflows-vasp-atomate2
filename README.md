@@ -18,15 +18,101 @@ custodian error handling and the task documents are atomate2's, unchanged. For
 | `atomate2-dielectric` | `atomate2.dielectric` | `atomate2.vasp.jobs.core:DielectricMaker` | `dielectric_cell`, `static_relative_permittivity`, `high_frequency_relative_permittivity`, `born_effective_charges`, `piezoelectric_tensor`, `total_energy`, `task_document` |
 | `atomate2-elastic` | `atomate2.elastic` | `atomate2.vasp.flows.elastic:ElasticMaker` | `relaxed_structure`, `elastic_tensor`, `compliance_tensor`, `bulk_modulus_{voigt,reuss,hill}`, `shear_modulus_{voigt,reuss,hill}`, `universal_anisotropy_index`, `task_document` |
 | `atomate2-phonons` | `atomate2.phonons` | `atomate2.vasp.flows.phonons:PhononMaker` | `relaxed_structure`, `phonon_cell`, `phonon_band_structure`, `phonon_density_of_states`, `vibrational_thermodynamics`, `zero_point_energy`, `task_document` |
+| `atomate2-full-characterization` | `atomate2.full-characterization` | the packages above, as child jobs | `standardized_structure` (each child collects its own) |
 
 Every package takes one input, `structure` (role `initial_structure`), a
-structure file that pymatgen reads. The Makers run with their default
-parameters, except that `atomate2.phonons` declares three Maker parameters:
+structure file that pymatgen reads (for `atomate2.full-characterization`, see
+below). The Makers run with their default
+parameters, except that `atomate2.phonons` declares four Maker parameters:
 `min_length` (the minimum supercell length in Å), `born_maker` (give `null`
 to skip the Born effective charge calculation, which atomate2 runs by default
-and which only makes sense for insulators) and `use_symmetrized_structure`
-(see the note on paths below). Only parameters a job gives are
-passed to the Maker.
+and which only makes sense for insulators), `use_symmetrized_structure`
+(see the note on paths below) and `bulk_relax_maker`, and `atomate2.elastic`
+declares `bulk_relax_maker`. Give `bulk_relax_maker` as `null` to skip the
+flow's own bulk relaxation (by default atomate2's tight double relaxation),
+for a structure that is already relaxed with tight settings. Only parameters a
+job gives are passed to the Maker.
+
+`atomate2.phonons` and `atomate2.elastic` also take optional inputs that pass
+results of earlier calculations to the Maker's `make()`, as JSON values (for
+example `--input total_dft_energy_per_formula_unit=-5.01`); they are not part
+of the declarations. `atomate2.phonons`: `born` (one 3×3 Born effective charge
+matrix per site, in the structure's site order) and `epsilon_static` (the
+ion-clamped dielectric tensor), which together replace the Born charge
+calculation, and `total_dft_energy_per_formula_unit` (eV), which replaces the
+static energy calculation. `atomate2.elastic`: `equilibrium_stress` (3×3, in
+kBar as VASP reports it), which the fit uses in place of the bulk relaxation's
+stress.
+
+## Full characterization
+
+`atomate2.full-characterization` characterizes one material as completely as
+these packages allow, running them as child jobs of its own job, in parallel
+where their dependencies allow, without running any VASP calculation twice:
+
+1. The structure is converted to its standard primitive cell (atomate2's
+   `structure_to_primitive`, keeping site properties), on which the k-point
+   and q-point paths are meaningful; the parameter `standardize = false` keeps
+   the cell as given.
+2. `relax`: `atomate2.double-relax` with the INCAR settings of atomate2's
+   `TightRelaxMaker` (the `update_user_incar_settings` powerup). This is the
+   bulk relaxation atomate2's elastic and phonon flows would each run.
+3. On the relaxed structure, at once: `band_structure`
+   (`atomate2.band-structure`), `elastic` (`atomate2.elastic` without its bulk
+   relaxation, with the relaxation's stress as `equilibrium_stress`), and either
+   `dielectric` (`atomate2.dielectric`, for an insulator: band gap above
+   atomate2's metal tolerance of 1e-4 eV) or `phonons` (for a metal: without
+   bulk relaxation and Born charge calculation).
+4. For an insulator, `phonons` starts as soon as `dielectric` has ended, with
+   its Born charges and dielectric tensor (atomate2's own extraction from the
+   task document), or without the non-analytical correction if it failed.
+
+`phonons` takes the relaxation's energy per formula unit as
+`total_dft_energy_per_formula_unit`, so it runs neither a relaxation, a static
+energy calculation nor a Born charge calculation. Its `total_dft_energy` is
+therefore the tight relaxation's final ionic step energy (ENCUT 700,
+EDIFF 1e-7), not that of the static run atomate2 would add by default
+(a `StaticMaker` at its default ENCUT 680). atomate2 symmetrizes the Born charges
+and dielectric tensor it is given, so the phonon document's values are the
+symmetrized ones (for diamond-structure crystals the charges vanish, and no
+non-analytical correction applies). The band-structure flow's
+static run is the only static calculation; no standalone `atomate2.static`
+runs. Every child gets the same relaxed structure in VASP's site order, so the
+Born charges refer to the cell phonons runs on.
+
+A magnetic material is the exception. When the relaxed structure carries
+nonzero magnetic moments (emmet attaches VASP's site moments), atomate2's phonon
+analysis accepts it only on its own symmetrized primitive cell, whose sites may
+come in another order. `phonons` then starts with the other children, with
+`use_symmetrized_structure = "primitive"`, the relaxation's energy per formula
+unit, and no Born charges passed in: for an insulator it computes its own (a
+deliberate duplicate of the dielectric run, which still runs), for a metal none.
+
+The job fails `relax_failed` if the relaxation fails. Otherwise it waits for
+every child, then succeeds if all succeeded and fails
+`characterization_incomplete` naming the failed ones; successful children are
+collected either way; a failed parent is not collected, so its
+`standardized_structure` is then missing. `characterization.json` (in the workdir
+and the job's data) records each child's job id, key and outcome and the
+decisions taken (band gap, the metal tolerance and symmetry precision used,
+insulator, magnetic). The VASP command and the `atomate2.*`/`pymatgen.*`
+settings given as job parameters reach every child, as for jobflow child jobs,
+and the parent reads the `atomate2.*`/`pymatgen.*` workspace settings and job
+parameters as the children do (for example `atomate2.bandgap_tol` and
+`atomate2.symprec` set its metal tolerance and its standardization precision). The package ships no
+`maxtime`, which would cap every child's.
+
+```console
+httk job new --install --workflow atomate2.full-characterization --input-from structure Si.cif
+```
+
+The structure is staged as the job's POSCAR. `--input-from` reads any structure
+file *httk₂* reads and writes it as a POSCAR; `--input structure=FILE` copies the
+file's bytes unchanged, so it takes only a POSCAR file.
+
+The parent yields `standardized_structure`; each child job is collected under
+its own package and declaration, and the parent's run links to the children's
+runs by label.
 
 ## Install and launch
 
@@ -239,8 +325,16 @@ The tests use `tests/fake_vasp_atomate2.py`, which is not VASP and computes
 nothing, and a fake POTCAR library in `tests/fake_psp/`. They run atomate2's
 Makers, custodian and emmet on these fakes, and run each package end to end
 through *httk-workflow*'s task manager. The normal profile runs
-`atomate2.static`, `atomate2.double-relax`, `atomate2.band-structure` and
-`atomate2.dielectric` end to end; the extended profile runs every package.
+`atomate2.static`, `atomate2.double-relax`, `atomate2.band-structure`,
+`atomate2.dielectric` and `atomate2.full-characterization` of a metal
+(aluminium) and with a failing relaxation end to end; the extended profile runs
+every package, and `atomate2.full-characterization` of a polar insulator
+(zincblende SiC), of silicon with a failing dielectric run and of a magnetic
+metal too. Test-only workspace settings switch the fake's behaviour:
+`fake_vasp.fail_on` names an INCAR tag, and the fake fails every run that sets
+it; `fake_vasp.ionic_born` gives isotropic, species-dependent Born charges that
+obey the acoustic sum rule (and keeps relaxed atoms in place); `fake_vasp.magnetization` reports a moment on every
+site.
 The fake's synthetic physics (cosine bands with a 1 eV gap, first- and
 second-neighbour spring forces, fixed dielectric tensors, and the stress of fixed cubic elastic
 constants when the workspace setting `fake_vasp.reference_a` names the

@@ -1,0 +1,28 @@
+{
+  "$id": "https://raw.githubusercontent.com/httk/workflows-vasp-atomate2/refs/tags/wf-decl-v0.2.0/atomate2-full-characterization/declaration.json",
+  "title": "atomate2 VASP full characterization",
+  "description": "This workflow declaration defines the httk atomate2-full-characterization workflow: it characterizes one material by running the atomate2-double-relax, atomate2-band-structure, atomate2-elastic, atomate2-dielectric (insulators only) and atomate2-phonons workflows as child jobs, each under its own declaration, on one shared relaxation with the INCAR settings of atomate2's TightRelaxMaker, without running any VASP calculation twice. The protocols, the VASP input sets and the custodian error handling are those of atomate2's Makers.\nIt defines the meaning of its roles: input role initial_structure is a structures entry containing the structure to characterize.\nOutput role standardized_structure is a structures entry containing the structure the relaxation started from: the standard primitive cell of the input structure, or the input structure itself when standardize is false.",
+  "x-httk-definition": {
+    "kind": "workflow_declaration",
+    "format": "0.1",
+    "version": "0.2.0",
+    "name": "atomate2-full-characterization",
+    "label": "atomate2_full_characterization_workflow_httk"
+  },
+  "inputs": [
+    {
+      "name": "initial_structure",
+      "entry_type": "structures",
+      "ref": "https://schemas.optimade.org/defs/v1.3/entrytypes/optimade/structures",
+      "description": "The structure to characterize."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "standardized_structure",
+      "entry_type": "structures",
+      "ref": "https://schemas.optimade.org/defs/v1.3/entrytypes/optimade/structures",
+      "description": "The structure the relaxation started from: the standard primitive cell of the input structure, or the input structure itself when standardize is false."
+    }
+  ]
+}

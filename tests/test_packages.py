@@ -26,7 +26,17 @@ _MAKERS = {
 _DIRECTORIES = tuple(_MAKERS)
 _STRUCTURE_ENERGY = ("atomate2-static", "atomate2-relax", "atomate2-tight-relax", "atomate2-double-relax")
 #: Declared Maker parameters: only these are passed to the Maker, and only when given.
-_PARAMETERS = {"atomate2-phonons": {"min_length", "born_maker", "use_symmetrized_structure"}}
+_PARAMETERS = {
+    "atomate2-phonons": {"min_length", "born_maker", "use_symmetrized_structure", "bulk_relax_maker"},
+    "atomate2-elastic": {"bulk_relax_maker"},
+}
+#: Optional untyped inputs beyond ``structure``: values the full-characterization package passes in.
+_INPUTS = {
+    "atomate2-phonons": {"born", "epsilon_static", "total_dft_energy_per_formula_unit"},
+    "atomate2-elastic": {"equilibrium_stress"},
+}
+#: Packages with a Python runner, which compose the jobflow packages.
+_COMPOSITE = ("atomate2-full-characterization",)
 
 
 @pytest.mark.parametrize("directory", _DIRECTORIES)
@@ -37,7 +47,7 @@ def test_package_is_a_jobflow_package_of_its_maker(directory: str) -> None:
     # The declared [workflow.collect] hook replaces the jobflow default collector.
     assert provider.collect_file == "collect.py"
     assert callable(provider.collector)
-    assert provider.inputs == {"structure": None}
+    assert provider.inputs == dict.fromkeys({"structure", *_INPUTS.get(directory, ())})
     assert set(provider.parameters) == _PARAMETERS.get(directory, set())
     # No resource table ships: sites differ (the README shows one).
     assert "resources" not in provider.runner_options
@@ -50,7 +60,7 @@ def test_package_maker_imports(directory: str) -> None:
     assert isinstance(getattr(importlib.import_module(module), name), type)
 
 
-@pytest.mark.parametrize("directory", _DIRECTORIES)
+@pytest.mark.parametrize("directory", _DIRECTORIES + _COMPOSITE)
 def test_package_declaration_matches_the_committed_file_and_manifest(directory: str) -> None:
     provider = load_workflow_package(REPO_ROOT / directory, register=False)
     declared = json.loads((REPO_ROOT / directory / "declaration.json").read_text(encoding="utf-8"))
@@ -69,9 +79,9 @@ def test_package_declaration_matches_the_committed_file_and_manifest(directory: 
 
 def test_plugin_manifest_lists_exactly_the_package_directories() -> None:
     manifest = parse_plugin_manifest(REPO_ROOT)
-    assert set(manifest.workflows) == set(_DIRECTORIES)
+    assert set(manifest.workflows) == {*_DIRECTORIES, *_COMPOSITE}
     packages = {path.parent.name for path in REPO_ROOT.glob("*/httk_workflow.toml")}
-    assert packages == set(_DIRECTORIES)
+    assert packages == {*_DIRECTORIES, *_COMPOSITE}
 
 
 def test_structure_energy_collect_hooks_are_identical() -> None:

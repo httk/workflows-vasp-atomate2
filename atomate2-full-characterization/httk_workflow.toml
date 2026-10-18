@@ -1,0 +1,40 @@
+[workflow]
+name = "atomate2.full-characterization"
+description = "characterize one material with the other atomate2 packages as child jobs: a tight double relaxation, then band structure, elastic tensor, dielectric response (insulators) and phonons, in parallel where their dependencies allow, without running any VASP calculation twice"
+declaration_uri = "https://raw.githubusercontent.com/httk/workflows-vasp-atomate2/refs/tags/wf-decl-v0.2.0/atomate2-full-characterization/declaration.json"
+declaration_file = "declaration.json"
+requires = ["httk-workflow>=2.1.1", "atomate2>=0.1.5", "phonopy>=2.20", "seekpath>=2.0"]
+
+# No maxtime: a parent's maxtime would cap every child's.
+[workflow.runner]
+entry = "run.py"
+steps = ["start", "relax_failed", "plan", "progress"]
+initial_step = "start"
+
+[workflow.calls]
+relax = "atomate2.double-relax"
+band_structure = "atomate2.band-structure"
+dielectric = "atomate2.dielectric"
+elastic = "atomate2.elastic"
+phonons = "atomate2.phonons"
+
+[workflow.parameters.standardize]
+type = "boolean"
+default = true
+description = "Start from the standard primitive cell of the structure (atomate2's structure_to_primitive), on which the band-structure k-point path and the phonon q-point path are meaningful; false keeps the cell as given."
+
+[workflow.inputs.structure]
+destination = "POSCAR"
+role = "initial_structure"
+entry_type = "structures"
+required = true
+
+[workflow.outputs.standardized_structure]
+entry_type = "structures"
+role = "standardized_structure"
+ref = "https://schemas.optimade.org/defs/v1.3/entrytypes/optimade/structures"
+description = "The structure the relaxation started from: the standard primitive cell of the input structure, or the input structure itself when standardize is false."
+product_of = "initial_structure"
+
+[workflow.collect]
+file = "collect.py"

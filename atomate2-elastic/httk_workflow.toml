@@ -9,11 +9,19 @@ requires = ["httk-workflow>=2.1.1", "atomate2>=0.1.5"]
 format = "jobflow"
 maker = "atomate2.vasp.flows.elastic:ElasticMaker"
 
+[workflow.parameters.bulk_relax_maker]
+description = "null skips the bulk relaxation, for a structure that is already relaxed with tight settings (atomate2 runs a tight double relaxation by default)."
+
 [workflow.inputs.structure]
 port = "structure"
 role = "initial_structure"
 entry_type = "structures"
 required = true
+
+[workflow.inputs.equilibrium_stress]
+port = "equilibrium_stress"
+required = false
+description = "The equilibrium stress of the structure (3x3), in kBar as VASP reports it, for the fit; atomate2 otherwise takes it from its own bulk relaxation."
 
 [workflow.outputs.relaxed_structure]
 entry_type = "structures"

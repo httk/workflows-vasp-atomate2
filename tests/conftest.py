@@ -45,6 +45,8 @@ def _isolated_httk_config(tmp_path_factory: pytest.TempPathFactory, monkeypatch:
     monkeypatch.delenv("HTTK_VASP_COMMAND", raising=False)
     # The fake VASP's elastic reference lattice is set by the tests that need it.
     monkeypatch.delenv("HTTK_FAKE_VASP_REFERENCE_A", raising=False)
+    for knob in ("HTTK_FAKE_VASP_FAIL_ON", "HTTK_FAKE_VASP_IONIC_BORN", "HTTK_FAKE_VASP_MAGNETIZATION"):
+        monkeypatch.delenv(knob, raising=False)
     for key in list(os.environ):
         if key.startswith(("ATOMATE2_", "PMG_")):
             monkeypatch.delenv(key)
