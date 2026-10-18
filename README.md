@@ -123,6 +123,18 @@ httk workflow run
 httk collect
 ```
 
+This makes the workflows known machine-wide. To install them into a workspace
+instead:
+
+```console
+httk workflow install --workspace main 'git+https://github.com/httk/workflows-vasp-atomate2@wf-v0.2.0'
+```
+
+This installs every package of the tag into the workspace, with calls between
+them bound to the same commit, so a daemon-run workspace can run any of them
+(`httk job new --workspace main --workflow atomate2.full-characterization
+--input-from structure Si.cif`). A running daemon needs no reload.
+
 ## Install with pip
 
 From a clone, `pip install -e .` or `pip install .` installs the workflows'
