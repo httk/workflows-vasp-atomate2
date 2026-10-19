@@ -67,6 +67,11 @@ where their dependencies allow, without running any VASP calculation twice:
    its Born charges and dielectric tensor (atomate2's own extraction from the
    task document), or without the non-analytical correction if it failed.
 
+The parameter `phonon_min_length` becomes the `phonons` child's `min_length`
+(atomate2's default is 20 Å). atomate2 refuses phonon supercells above 1200
+atoms, which a 20 Å supercell of a small cell exceeds: diamond needs about
+10 Å, a 216-atom supercell (`--parameter phonon_min_length=10`).
+
 `phonons` takes the relaxation's energy per formula unit as
 `total_dft_energy_per_formula_unit`, so it runs neither a relaxation, a static
 energy calculation nor a Born charge calculation. Its `total_dft_energy` is

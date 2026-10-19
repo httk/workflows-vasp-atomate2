@@ -84,6 +84,13 @@ def _call(
     return {"job_id": reference.job_id, "job_key": reference.job_key, "kind": "called", "failure": None}
 
 
+def _phonon_parameters(a: Attempt) -> dict[str, object]:
+    """Return the Maker parameters of every phonons call: no bulk relaxation, and ``min_length`` when given."""
+
+    min_length = a.parameters.get("phonon_min_length")
+    return {"bulk_relax_maker": None} | ({} if min_length is None else {"min_length": min_length})
+
+
 def _part(child: ChildResult) -> dict[str, object]:
     """Return the bookkeeping entry of one observed child."""
 
@@ -169,7 +176,7 @@ def plan(a: Attempt) -> None:
     parts["elastic"] = _call(a, "elastic", {"equilibrium_stress": output["stress"]}, {"bulk_relax_maker": None})
     if insulator:
         parts["dielectric"] = _call(a, "dielectric")
-    phonons = {"bulk_relax_maker": None} | ({} if insulator else {"born_maker": None})
+    phonons = _phonon_parameters(a) | ({} if insulator else {"born_maker": None})
     if magnetic:
         phonons["use_symmetrized_structure"] = "primitive"
         parts["phonons"] = _call(a, "phonons", {"total_dft_energy_per_formula_unit": energy}, phonons)
@@ -203,7 +210,7 @@ def progress(a: Attempt) -> None:
     dielectric = parts.get("dielectric")
     if dielectric is not None and dielectric["kind"] in _TERMINAL and "phonons" not in parts:
         inputs = {"total_dft_energy_per_formula_unit": a.state["energy_per_formula_unit"]}
-        parameters = {"bulk_relax_maker": None}
+        parameters = _phonon_parameters(a)
         if dielectric["kind"] == "succeeded":
             # Where atomate2's PhononMaker takes them from its own born_maker's task document.
             calculation = _flow_output(a.children["dielectric"])["calcs_reversed"][0]["output"]

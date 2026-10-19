@@ -68,7 +68,7 @@ def _jobs(workspace: Workspace) -> dict[str, tuple[Path, dict[str, Any]]]:
 
 
 def _characterize(
-    tmp_path: Path, structure: object, settings: dict[str, object]
+    tmp_path: Path, structure: object, settings: dict[str, object], parameters: dict[str, object] | None = None
 ) -> tuple[Workspace, str, dict[str, tuple[Path, dict[str, Any]]]]:
     """Run the parent until idle; return the workspace, its job id and its children by label."""
 
@@ -80,7 +80,7 @@ def _characterize(
         timeout=3600.0,
         structure=structure,
         settings=settings,
-        parameters={"vasp.command": FAKE_VASP},
+        parameters={"vasp.command": FAKE_VASP, **(parameters or {})},
     )
     children = {
         document["tag"]: (path, document)
@@ -198,7 +198,11 @@ def test_full_characterization(tmp_path: Path, case: str, test_profile: TestProf
     structure, reference, settings, normal = _CASES[case]
     if not normal and not test_profile.extended:
         pytest.skip("extended profile only (HTTK_TEST_PROFILE=extended)")
-    workspace, job_id, children = _characterize(tmp_path, structure(), {"fake_vasp.reference_a": reference, **settings})
+    # The metal case also passes the phonons child a min_length.
+    parameters = {"phonon_min_length": 8.0} if case == "metal" else {}
+    workspace, job_id, children = _characterize(
+        tmp_path, structure(), {"fake_vasp.reference_a": reference, **settings}, parameters
+    )
     insulator = case in ("polar_insulator", "dielectric_failed")
     dielectric_failed = case == "dielectric_failed"
     magnetic = case == "magnetic_metal"
@@ -258,6 +262,7 @@ def test_full_characterization(tmp_path: Path, case: str, test_profile: TestProf
         assert children["dielectric"][1]["parent"]["activation_id"] == plan_activation
     given = children["phonons"][1]["parameters"]
     assert given.get("use_symmetrized_structure") == ("primitive" if magnetic else None)
+    assert given.get("min_length") == parameters.get("phonon_min_length")
     if case == "polar_insulator":
         # The dielectric's tensors reach phonons, which applies the non-analytical correction with them:
         # isotropic charges survive atomate2's symmetrization, site by site in the phonon cell's order.
