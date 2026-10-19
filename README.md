@@ -67,10 +67,31 @@ where their dependencies allow, without running any VASP calculation twice:
    its Born charges and dielectric tensor (atomate2's own extraction from the
    task document), or without the non-analytical correction if it failed.
 
-The parameter `phonon_min_length` becomes the `phonons` child's `min_length`
-(atomate2's default is 20 Å). atomate2 refuses phonon supercells above 1200
-atoms, which a 20 Å supercell of a small cell exceeds: diamond needs about
-10 Å, a 216-atom supercell (`--parameter phonon_min_length=10`).
+The parameter `child_parameters` passes job parameters to the children: a
+JSON object from child label (`relax`, `band_structure`, `elastic`,
+`dielectric`, `phonons`) to that child's job parameters. Each child accepts its
+package's own declared parameters and its `jobflow_overrides`, which apply
+after the parent's own (so `relax` applies `TightRelaxMaker`'s INCAR settings
+first, and anything given on top). With *httk-workflow*'s `maker` override kind,
+`jobflow_overrides` reaches every Maker field, including those `make()` reads.
+The parameters the parent sets itself (`elastic`: `bulk_relax_maker`;
+`phonons`: `bulk_relax_maker`, `born_maker`, `use_symmetrized_structure`) are
+refused, also as the first field of a `maker` override's path, as are unknown
+labels: the job fails `child_parameters_invalid` before any child starts.
+`function`- and `maker_kwargs`-kind overrides are not inspected; keeping them
+off those fields is the user's responsibility. Each child's own checks
+(declared parameter types, `jobflow_overrides` syntax) run when that child is
+created, so for the children after the relaxation the job fails
+`child_parameters_invalid` only then, and no child of that step is started. A name the child does not declare is
+passed on with a warning in the log, not refused, so a misspelled name has no
+effect. For example, atomate2 refuses phonon supercells
+above 1200 atoms, which its default 20 Å `min_length` exceeds for a small cell:
+diamond needs about 10 Å, a 216-atom supercell.
+
+```console
+httk job new --install --workflow atomate2.full-characterization --input-from structure diamond.cif \
+    --parameter 'child_parameters={"phonons": {"min_length": 10}}'
+```
 
 `phonons` takes the relaxation's energy per formula unit as
 `total_dft_energy_per_formula_unit`, so it runs neither a relaxation, a static
@@ -100,9 +121,10 @@ collected either way; a failed parent is not collected, so its
 `standardized_structure` is then missing. `characterization.json` (in the workdir
 and the job's data) records each child's job id, key and outcome and the
 decisions taken (band gap, the metal tolerance and symmetry precision used,
-insulator, magnetic). The VASP command and the `atomate2.*`/`pymatgen.*`
-settings given as job parameters reach every child, as for jobflow child jobs,
-and the parent reads the `atomate2.*`/`pymatgen.*` workspace settings and job
+insulator, magnetic, the `child_parameters` given). The VASP command and the
+`atomate2.*`/`pymatgen.*` settings given as job parameters reach every child, as
+for jobflow child jobs (a child's `child_parameters` may replace them for that
+child; the parent's own decisions keep the parent's values), and the parent reads the `atomate2.*`/`pymatgen.*` workspace settings and job
 parameters as the children do (for example `atomate2.bandgap_tol` and
 `atomate2.symprec` set its metal tolerance and its standardization precision). The package ships no
 `maxtime`, which would cap every child's.

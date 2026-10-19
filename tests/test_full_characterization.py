@@ -57,6 +57,19 @@ _CASES = {
 }
 
 
+#: A harmless relax override the metal case passes through ``child_parameters``.
+_NELM = {
+    "kind": "function",
+    "function": "atomate2.vasp.powerups:update_user_incar_settings",
+    "kwargs": {"incar_updates": {"NELM": 150}},
+}
+#: A phonons override of a Maker field ``make()`` reads: the displacement runs' ENCUT.
+_DISPLACEMENT_ENCUT = {
+    "kind": "maker",
+    "update": {"phonon_displacement_maker.input_set_generator.user_incar_settings.ENCUT": 555},
+}
+
+
 def _jobs(workspace: Workspace) -> dict[str, tuple[Path, dict[str, Any]]]:
     """Every job of the workspace: job id -> (job directory, job.json)."""
 
@@ -193,15 +206,50 @@ def test_cif_input_is_staged_as_a_poscar(tmp_path: Path) -> None:
     assert Structure.from_file(poscar).matches(Structure.from_file(cif))
 
 
+@pytest.mark.parametrize(
+    "child_parameters",
+    [
+        {"static": {}},
+        {"phonons": {"bulk_relax_maker": None}},
+        {"phonons": {"jobflow_overrides": [{"kind": "maker", "update": {"bulk_relax_maker.name": "again"}}]}},
+    ],
+    ids=["unknown_label", "owned_key", "owned_maker_field"],
+)
+def test_invalid_child_parameters_fail_before_any_child(tmp_path: Path, child_parameters: dict) -> None:
+    workspace, job_id, children = _characterize(tmp_path, aluminium(), {}, {"child_parameters": child_parameters})
+    failure = _failure(workspace, job_id)
+    assert failure["code"] == "child_parameters_invalid", failure
+    assert children == {}
+
+
+@pytest.mark.parametrize("label", ["band_structure", "elastic"])
+def test_child_refusing_its_parameters_fails_the_characterization(tmp_path: Path, label: str) -> None:
+    """A malformed override only the child's creation detects, for a child called after the relaxation."""
+
+    child_parameters = {label: {"jobflow_overrides": [{"kind": "nope"}]}}
+    workspace, job_id, children = _characterize(tmp_path, aluminium(), {}, {"child_parameters": child_parameters})
+    failure = _failure(workspace, job_id)
+    assert failure["code"] == "child_parameters_invalid" and failure["message"].startswith(f"{label}: ")
+    # The relaxation ran; no child of the failed step started, band_structure before elastic included.
+    assert set(children) == {"relax"}
+
+
 @pytest.mark.parametrize("case", tuple(_CASES))
 def test_full_characterization(tmp_path: Path, case: str, test_profile: TestProfile) -> None:
     structure, reference, settings, normal = _CASES[case]
     if not normal and not test_profile.extended:
         pytest.skip("extended profile only (HTTK_TEST_PROFILE=extended)")
-    # The metal case also passes the phonons child a min_length.
-    parameters = {"phonon_min_length": 8.0} if case == "metal" else {}
+    # The metal case also passes the phonons child a min_length and a Maker-field override, the relax child an override.
+    child_parameters = {
+        "phonons": {"min_length": 8.0, "jobflow_overrides": [_DISPLACEMENT_ENCUT]},
+        "relax": {"jobflow_overrides": [_NELM]},
+    }
+    child_parameters = child_parameters if case == "metal" else {}
     workspace, job_id, children = _characterize(
-        tmp_path, structure(), {"fake_vasp.reference_a": reference, **settings}, parameters
+        tmp_path,
+        structure(),
+        {"fake_vasp.reference_a": reference, **settings},
+        {"child_parameters": child_parameters} if child_parameters else {},
     )
     insulator = case in ("polar_insulator", "dielectric_failed")
     dielectric_failed = case == "dielectric_failed"
@@ -233,6 +281,13 @@ def test_full_characterization(tmp_path: Path, case: str, test_profile: TestProf
             (700, 1e-7, -0.001)
         )
         assert (run["incar"]["ISIF"], run["incar"]["NSW"]) == (3, 99)
+        if child_parameters:
+            assert run["incar"]["NELM"] == 150
+    # The parent's TightRelaxMaker override comes first, then the given ones.
+    tight, *given_overrides = children["relax"][1]["parameters"]["jobflow_overrides"]
+    assert tight["function"] == "atomate2.vasp.powerups:update_user_incar_settings"
+    assert tight["kwargs"]["incar_updates"]["EDIFF"] == pytest.approx(1e-7)
+    assert given_overrides == child_parameters.get("relax", {}).get("jobflow_overrides", [])
     # Only relaxations move the cell (ISIF 3 with ionic steps): every other run keeps it or is a static.
     assert not [label for label in children if label != "relax" for run in runs[label] if _relaxes_cell(run)]
     assert len(runs["band_structure"]) == 3
@@ -242,6 +297,8 @@ def test_full_characterization(tmp_path: Path, case: str, test_profile: TestProf
     phonons = _output(children["phonons"][0])
     # Phonons ran only its displacements: no relaxation, no static energy run, no Born charge run.
     assert len(runs["phonons"]) == len(phonons["jobdirs"]["displacements_job_dirs"])
+    if child_parameters:
+        assert {run["incar"]["ENCUT"] for run in runs["phonons"]} == {555}
     assert phonons["jobdirs"]["optimization_run_job_dir"] is None
     assert phonons["jobdirs"]["static_run_job_dir"] is None
     assert phonons["jobdirs"]["born_run_job_dir"] is None
@@ -262,7 +319,7 @@ def test_full_characterization(tmp_path: Path, case: str, test_profile: TestProf
         assert children["dielectric"][1]["parent"]["activation_id"] == plan_activation
     given = children["phonons"][1]["parameters"]
     assert given.get("use_symmetrized_structure") == ("primitive" if magnetic else None)
-    assert given.get("min_length") == parameters.get("phonon_min_length")
+    assert given.get("min_length") == child_parameters.get("phonons", {}).get("min_length")
     if case == "polar_insulator":
         # The dielectric's tensors reach phonons, which applies the non-analytical correction with them:
         # isotropic charges survive atomate2's symmetrization, site by site in the phonon cell's order.
@@ -284,6 +341,7 @@ def test_full_characterization(tmp_path: Path, case: str, test_profile: TestProf
     decisions = characterization["decisions"]
     assert {label for label, part in characterization["parts"].items() if part["kind"] == "succeeded"} == succeeded
     assert (decisions["insulator"], decisions["magnetic"]) == (insulator, magnetic)
+    assert decisions["child_parameters"] == child_parameters
     if case == "metal":
         # The parent read the workspace's atomate2 settings, as the children do.
         assert (decisions["band_gap_tolerance"], decisions["symprec"]) == (0.5, 0.01)

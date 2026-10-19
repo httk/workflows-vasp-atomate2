@@ -26,6 +26,14 @@ The steps that import atomate2 and pymatgen first export the ``atomate2.*`` and
 ``pymatgen.*`` settings as the variables those libraries read, as the jobflow
 runner does for the children, so the parent's decisions use the same tolerances.
 
+The job parameter ``child_parameters`` maps child labels to further job parameters for
+that child: its own declared parameters and ``jobflow_overrides``, which follow the
+parent's. Unknown labels and the parameters the parent sets itself (``_OWNED``, also as
+the first field of a ``maker`` override's path) are refused before any child is called.
+Each child's own checks (declared parameter types, ``jobflow_overrides`` syntax) run when
+that child is created, so for the children after the relaxation they fail the job only
+then, and no child of that step is started. Either way the job fails ``child_parameters_invalid``.
+
 The job fails ``relax_failed`` when the relaxation fails. Otherwise it waits for
 every child, then succeeds when all succeeded and fails ``characterization_incomplete``
 naming the failed ones. ``characterization.json`` (in the workdir and the job data)
@@ -43,6 +51,14 @@ run = Runner("atomate2.full-characterization")
 _VASP_COMMANDS = ("vasp.command", "vasp.gamma_command", "vasp.ncl_command")
 _LIBRARY_PREFIXES = ("atomate2.", "pymatgen.")
 _TERMINAL = ("succeeded", "failed", "cancelled")
+#: Every child's label, and the job parameters the parent sets itself for it, which ``child_parameters`` may not.
+_OWNED = {
+    "relax": (),
+    "band_structure": (),
+    "elastic": ("bulk_relax_maker",),
+    "dielectric": (),
+    "phonons": ("bulk_relax_maker", "born_maker", "use_symmetrized_structure"),
+}
 
 
 def _forwarded(a: Attempt) -> dict[str, object]:
@@ -69,26 +85,67 @@ def _export_library_settings(a: Attempt) -> None:
         os.environ["PMG_VASP_PSP_DIR"] = psp_dir
 
 
+def _invalid_child_parameters(given: object) -> str | None:
+    """Return why the ``child_parameters`` job parameter is invalid, or None."""
+
+    if not isinstance(given, dict):
+        return "child_parameters must map child labels to job parameters"
+    for label, parameters in given.items():
+        if label not in _OWNED:
+            return f"child_parameters names an unknown child {label!r}; the children are {', '.join(_OWNED)}"
+        if not isinstance(parameters, dict):
+            return f"child_parameters[{label!r}] must map job parameter names to values"
+        overrides = parameters.get("jobflow_overrides", [])
+        if not isinstance(overrides, list):
+            return f"child_parameters[{label!r}]['jobflow_overrides'] must be a list"
+        names = set(parameters)
+        # A maker override sets Maker fields too; function and maker_kwargs overrides are not inspected.
+        for override in overrides:
+            if (
+                isinstance(override, dict)
+                and override.get("kind") == "maker"
+                and isinstance(override.get("update"), dict)
+            ):
+                names |= {str(path).split(".", 1)[0] for path in override["update"]}
+        owned = sorted(names & set(_OWNED[label]))
+        if owned:
+            return f"child_parameters[{label!r}] sets {', '.join(owned)}, which the parent sets itself"
+    return None
+
+
 def _call(
-    a: Attempt, alias: str, inputs: dict[str, object] | None = None, parameters: dict[str, object] | None = None
-) -> dict[str, object]:
-    """Call one package on the relaxed structure and return its bookkeeping entry."""
+    a: Attempt,
+    alias: str,
+    inputs: dict[str, object] | None = None,
+    parameters: dict[str, object] | None = None,
+    structure: str | None = None,
+) -> dict[str, object] | None:
+    """Call one package on the relaxed structure (or ``structure``) and return its bookkeeping entry.
 
-    reference = a.call(
-        alias,
-        label=alias,
-        # Absolute: a relative path would resolve against the called package's directory.
-        inputs={"structure": str(a.workdir / "relaxed.json"), **(inputs or {})},
-        parameters={**_forwarded(a), **(parameters or {})},
-    )
+    The child's parameters are the forwarded ones, then its ``child_parameters``, then the
+    parent's own ``parameters``; its ``jobflow_overrides`` are the parent's followed by the given ones.
+    A child that refuses them fails the job ``child_parameters_invalid``; this and every later
+    call then return None, and the step returns without its own outcome.
+    """
+
+    if a.published:
+        return None
+
+    owned = parameters or {}
+    child = a.parameters.get("child_parameters", {}).get(alias, {})
+    overrides = [*owned.get("jobflow_overrides", ()), *child.get("jobflow_overrides", ())]
+    try:
+        reference = a.call(
+            alias,
+            label=alias,
+            # Absolute: a relative path would resolve against the called package's directory.
+            inputs={"structure": structure or str(a.workdir / "relaxed.json"), **(inputs or {})},
+            parameters={**_forwarded(a), **child, **owned} | ({"jobflow_overrides": overrides} if overrides else {}),
+        )
+    except ValueError as exc:
+        a.fail("child_parameters_invalid", f"{alias}: {exc}")
+        return None
     return {"job_id": reference.job_id, "job_key": reference.job_key, "kind": "called", "failure": None}
-
-
-def _phonon_parameters(a: Attempt) -> dict[str, object]:
-    """Return the Maker parameters of every phonons call: no bulk relaxation, and ``min_length`` when given."""
-
-    min_length = a.parameters.get("phonon_min_length")
-    return {"bulk_relax_maker": None} | ({} if min_length is None else {"min_length": min_length})
 
 
 def _part(child: ChildResult) -> dict[str, object]:
@@ -107,8 +164,12 @@ def _flow_output(child: ChildResult) -> dict:
 
 @run.step
 def start(a: Attempt) -> None:
-    """Standardize the structure and call the shared tight double relaxation."""
+    """Check ``child_parameters``, standardize the structure and call the shared tight double relaxation."""
 
+    problem = _invalid_child_parameters(a.parameters.get("child_parameters", {}))
+    if problem is not None:
+        a.fail("child_parameters_invalid", problem)
+        return
     _export_library_settings(a)
     from atomate2 import SETTINGS
     from atomate2.vasp.sets.core import TightRelaxSetGenerator
@@ -132,12 +193,8 @@ def start(a: Attempt) -> None:
             "kwargs": {"incar_updates": TightRelaxSetGenerator().incar_updates},
         }
     ]
-    a.call(
-        "relax",
-        label="relax",
-        inputs={"structure": str(path)},
-        parameters={**_forwarded(a), "jobflow_overrides": tight},
-    )
+    if _call(a, "relax", parameters={"jobflow_overrides": tight}, structure=str(path)) is None:
+        return
     a.gather("plan", when="all_succeeded", on_impossible="relax_failed")
 
 
@@ -176,7 +233,7 @@ def plan(a: Attempt) -> None:
     parts["elastic"] = _call(a, "elastic", {"equilibrium_stress": output["stress"]}, {"bulk_relax_maker": None})
     if insulator:
         parts["dielectric"] = _call(a, "dielectric")
-    phonons = _phonon_parameters(a) | ({} if insulator else {"born_maker": None})
+    phonons = {"bulk_relax_maker": None} | ({} if insulator else {"born_maker": None})
     if magnetic:
         phonons["use_symmetrized_structure"] = "primitive"
         parts["phonons"] = _call(a, "phonons", {"total_dft_energy_per_formula_unit": energy}, phonons)
@@ -194,7 +251,10 @@ def plan(a: Attempt) -> None:
         "insulator": insulator,
         "magnetic": magnetic,
         "notes": notes,
+        "child_parameters": a.parameters.get("child_parameters", {}),
     }
+    if a.published:
+        return
     a.state.merge({"parts": parts, "decisions": decisions, "energy_per_formula_unit": energy})
     a.gather("progress", when="any_terminal")
 
@@ -210,7 +270,7 @@ def progress(a: Attempt) -> None:
     dielectric = parts.get("dielectric")
     if dielectric is not None and dielectric["kind"] in _TERMINAL and "phonons" not in parts:
         inputs = {"total_dft_energy_per_formula_unit": a.state["energy_per_formula_unit"]}
-        parameters = _phonon_parameters(a)
+        parameters = {"bulk_relax_maker": None}
         if dielectric["kind"] == "succeeded":
             # Where atomate2's PhononMaker takes them from its own born_maker's task document.
             calculation = _flow_output(a.children["dielectric"])["calcs_reversed"][0]["output"]
@@ -219,6 +279,8 @@ def progress(a: Attempt) -> None:
             parameters["born_maker"] = None
             decisions["notes"].append("phonons without non-analytical correction: dielectric failed")
         parts["phonons"] = _call(a, "phonons", inputs, parameters)
+        if a.published:
+            return
     a.state.merge({"parts": parts, "decisions": decisions})
     live = [label for label, part in parts.items() if part["kind"] not in _TERMINAL]
     if live:

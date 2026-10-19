@@ -23,9 +23,9 @@ type = "boolean"
 default = true
 description = "Start from the standard primitive cell of the structure (atomate2's structure_to_primitive), on which the band-structure k-point path and the phonon q-point path are meaningful; false keeps the cell as given."
 
-[workflow.parameters.phonon_min_length]
-type = "number"
-description = "The phonons child's min_length: the minimum supercell length, in Angstrom (atomate2's default of 20 when not given). atomate2 refuses supercells above 1200 atoms, so a small cell such as diamond's needs a smaller value."
+[workflow.parameters.child_parameters]
+type = "object"
+description = "Job parameters for each child, by label (relax, band_structure, elastic, dielectric, phonons): each child's declared parameters and its jobflow_overrides, which apply after the parent's own. Parameters the parent sets itself (elastic: bulk_relax_maker; phonons: bulk_relax_maker, born_maker, use_symmetrized_structure) are refused."
 
 [workflow.inputs.structure]
 destination = "POSCAR"
