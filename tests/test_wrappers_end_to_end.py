@@ -10,6 +10,7 @@ invocation log proves the mapping.
 import importlib.util
 import json
 import os
+import shlex
 import shutil
 import tomllib
 from collections.abc import Iterator
@@ -39,6 +40,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # Package directory -> VASP runs its Maker makes.
 _RUNS = {"atomate2-static": 1, "atomate2-relax": 1, "atomate2-tight-relax": 1, "atomate2-double-relax": 2}
 _NORMAL = ("atomate2-static", "atomate2-double-relax")
+# httk-workflow-vasp's launch wrapper, after the interpreter, as httk-workflow's jobflow runner maps vasp.command.
+_WRAPPER = ["-P", "-m", "httk.codes.vasp.launch", "--standard", FAKE_VASP, "--ncl", FAKE_VASP]
 # The hooks only collect a band gap where httk-analyse registers its typed record.
 _BAND_GAP = {"band_gap"} if importlib.util.find_spec("httk.analyse") is not None else set()
 
@@ -159,13 +162,20 @@ def test_package_runs_and_collects(tmp_path: Path, directory: str, test_profile:
     workspace, job_id = _run(tmp_path, directory)
     assert resolve_job(workspace, job_id).state == "succeeded", _failure(workspace, job_id)
 
-    invocations = [
-        json.loads(line)
-        for log in workspace.root.rglob("fake-vasp-invocations.jsonl")
-        for line in log.read_text(encoding="utf-8").splitlines()
-    ]
+    logs = list(workspace.root.rglob("fake-vasp-invocations.jsonl"))
+    invocations = [json.loads(line) for log in logs for line in log.read_text(encoding="utf-8").splitlines()]
     assert len(invocations) == _RUNS[directory]
-    assert {item["env"]["ATOMATE2_VASP_CMD"] for item in invocations} == {FAKE_VASP}
+    wrapped = importlib.util.find_spec("httk.codes.vasp") is not None
+    for item in invocations:
+        # The child's interpreter path may be spelled differently from this process's sys.executable.
+        argv = shlex.split(item["env"]["ATOMATE2_VASP_CMD"])
+        assert argv[1:] == _WRAPPER if wrapped else argv == [FAKE_VASP]
+    if wrapped:
+        # The wrapper ran once per VASP launch, in the run directory, and recorded its parallelization decision.
+        for log in logs:
+            launches = (log.parent / "httk-vasp-launch.log").read_text(encoding="utf-8").splitlines()
+            assert len(launches) == len(log.read_text(encoding="utf-8").splitlines())
+            assert all(" parallel: " in line for line in launches)
     assert {item["env"]["PMG_VASP_PSP_DIR"] for item in invocations} == {FAKE_PSP}
     # The POTCARs atomate2 wrote came from the fake library, not from a real one.
     titels = [titel for item in invocations for titel in item["potcar_titels"]]

@@ -172,7 +172,7 @@ for a working copy. An editable install follows `git pull` (restart running
 httk processes); a non-editable install at an unchanged version picks up new
 tags only with `pip install --force-reinstall --no-deps .`. Shallow clones are
 refused (`git fetch --unshallow --tags`). `pip install -e '.[dispatcher]'`
-also installs *httk-workflow-vasp*, for the VASP variant dispatcher.
+also installs *httk-workflow-vasp*, for the VASP launch wrapper.
 
 ## Configuration
 
@@ -181,12 +181,18 @@ environment variables atomate2 and pymatgen read. It does this in its own
 processes, so configuration files on the compute node are not needed:
 
 - `vasp.command` becomes `ATOMATE2_VASP_CMD` (and `ATOMATE2_VASP_GAMMA_CMD`
-  and `ATOMATE2_VASP_NCL_CMD`, unless `vasp.gamma_command`/`vasp.ncl_command`
-  are set). Name only the program, for example `vasp_std`: the launch prefix of
-  the attempt (`srun`, `mpirun`) is prepended for you. atomate2 0.1.5 does not
-  read `ATOMATE2_VASP_NCL_CMD`; when `vasp.ncl_command` or `vasp.gamma_command`
-  is set and *httk-workflow-vasp* is installed, all three variables instead name
-  its dispatcher, which picks the program from each job's INCAR and KPOINTS.
+  and `ATOMATE2_VASP_NCL_CMD`). Name only the program, for example `vasp_std`.
+  With *httk-workflow-vasp* installed, all three variables name its launch
+  wrapper (`python -m httk.codes.vasp.launch --standard vasp_std …`), which runs
+  once per VASP launch in the job: it picks the standard, non-collinear
+  (`vasp.ncl_command`) or Gamma-only (`vasp.gamma_command`) program from the
+  INCAR and KPOINTS, writes planned `KPAR`/`NCORE` into the INCAR unless it
+  already sets them, and then applies the launch prefix of the attempt (`srun`,
+  `mpirun`) itself. Set `vasp.parallelization` to `off` (a workspace setting or
+  job parameter) to leave the INCAR's parallelization to VASP. Without
+  *httk-workflow-vasp* the commands are mapped directly with the launch prefix
+  prepended, and nothing is planned; atomate2 0.1.5 does not read
+  `ATOMATE2_VASP_NCL_CMD`.
 - `pymatgen.psp_dir` becomes `PMG_VASP_PSP_DIR`. The directory uses pymatgen's
   layout. atomate2's default input sets use the `PBE_54` functional, so the
   POTCARs are found at `<psp_dir>/POT_GGA_PAW_PBE_54/POTCAR.<El>`. Under the
