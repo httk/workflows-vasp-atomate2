@@ -113,6 +113,16 @@ come in another order. `phonons` then starts with the other children, with
 `use_symmetrized_structure = "primitive"`, the relaxation's energy per formula
 unit, and no Born charges passed in: for an insulator it computes its own (a
 deliberate duplicate of the dielectric run, which still runs), for a metal none.
+Every child of a non-magnetic relaxation except the relaxation itself runs
+without spin polarization: the parent gives it the `update_user_incar_settings`
+powerup with `ISPIN = 1` as a `function` override, before the
+`child_parameters` overrides. The relaxation, and every child of a magnetic
+one, keeps atomate2's `ISPIN = 2`, by which the relaxation detects magnetism.
+The jobflow runner applies every `maker` override before `make()` and every
+other kind after it, so a `maker` override of `ISPIN` is overridden. To
+re-enable spin for a child, pass
+`{"kind": "function", "function": "atomate2.vasp.powerups:update_user_incar_settings", "kwargs": {"incar_updates": {"ISPIN": 2}}}`
+in that child's `child_parameters` `jobflow_overrides`.
 
 The job fails `relax_failed` if the relaxation fails. Otherwise it waits for
 every child, then succeeds if all succeeded and fails
@@ -121,7 +131,8 @@ collected either way; a failed parent is not collected, so its
 `standardized_structure` is then missing. `characterization.json` (in the workdir
 and the job's data) records each child's job id, key and outcome and the
 decisions taken (band gap, the metal tolerance and symmetry precision used,
-insulator, magnetic, the `child_parameters` given). The VASP command and the
+insulator, magnetic, the `child_parameters` given, and notes such as the
+non-magnetic `ISPIN = 1`). The VASP command and the
 `atomate2.*`/`pymatgen.*` settings given as job parameters reach every child, as
 for jobflow child jobs (a child's `child_parameters` may replace them for that
 child; the parent's own decisions keep the parent's values), and the parent reads the `atomate2.*`/`pymatgen.*` workspace settings and job
@@ -370,8 +381,8 @@ command without job selectors also visits, exit 0 silently without output.
 | `atomate2.band-structure` | band gap, directness, transition and VBM/CBM energies of the uniform mesh; the same of the line path as `line_*`, with the edges' k-point labels and coordinates; Fermi energies, number of bands | `band_structure.png`, `dos.png` (uniform mesh), `band_structure_dos.png`; `band_structure.json` and `dos.json` record their energy zero |
 | `atomate2.dielectric` | electronic (ε∞), ionic and static tensors with eigenvalues and averages, refractive index √(mean ε∞), Born effective charges per site with species, trace and their sum, piezoelectric tensor (C/m², Voigt `xx yy zz yz xz xy`, relaxed-ion) | `dielectric.png` (electronic and ionic parts along the principal axes of the static tensor), `born_charges.png` |
 | `atomate2.elastic` | C_ij and S_ij, stiffness eigenvalues and the zero-stress Born criterion (C positive definite) next to the largest equilibrium stress, Voigt/Reuss/Hill bulk and shear moduli, Hill Young's modulus and Poisson ratio, universal anisotropy, atomate2's Debye temperature and sound velocities | `elastic_tensor.png`, `youngs_modulus.png` (+ `.json`: directional E in the xy, xz and yz planes), `stress_strain.png` (+ `.json`: the fit's data and the fitted C_ij) |
-| `atomate2.phonons` | imaginary modes, the lowest frequency and its q-point, whether atomate2 applied the non-analytical correction (Born charges and ε∞ given, not all charges zero), zero-point energy, F, U, S and C_v at 300 K (only when 300 K is sampled), supercell matrix | `phonon_band_structure.png`, `phonon_dos.png`, `phonon_band_structure_dos.png`, `phonon_thermodynamics.png` |
-| `atomate2.full-characterization` | a combined summary (relaxed structure, uniform band gap and directness, ε∞ and ε0, Hill moduli, phonon stability and zero-point energy), the decisions of `characterization.json` and each child's state; each succeeded child's report in `<label>/` | each succeeded child's report and figures in `<label>/` (`relax/`, `band_structure/`, `elastic/`, `dielectric/`, `phonons/`) |
+| `atomate2.phonons` | imaginary modes (atomate2's flag), the lowest frequency and its q-point, dynamic stability (no frequency below −0.05 THz, which tolerates acoustic noise at Γ), whether atomate2 applied the non-analytical correction (Born charges and ε∞ given, not all charges zero), zero-point energy, F, U, S and C_v at 300 K (only when 300 K is sampled), supercell matrix | `phonon_band_structure.png`, `phonon_dos.png`, `phonon_band_structure_dos.png`, `phonon_thermodynamics.png` |
+| `atomate2.full-characterization` (and `latex`, below) | a combined summary (relaxed structure, uniform band gap and directness, ε∞ and ε0, Hill moduli, atomate2's imaginary-mode flag, dynamic stability with the 0.05 THz tolerance and the zero-point energy), the decisions of `characterization.json` and each child's state; each succeeded child's report in `<label>/` | each succeeded child's report and figures in `<label>/` (`relax/`, `band_structure/`, `elastic/`, `dielectric/`, `phonons/`) |
 
 Conventions: the values are the documents' where `collect.py` reads them. The
 elastic tensor is `elastic_tensor.raw`, in the Cartesian frame of the relaxed
@@ -392,9 +403,32 @@ a succeeded child whose analysis fails does not stop the others, but the script
 then exits 1 naming it (`failed_analyses` in the report); failed children are
 listed, not fatal.
 
+`atomate2.full-characterization` also declares `latex`, a light LaTeX report
+of the whole characterization:
+
+```console
+httk workflow postprocess --script latex JOB
+```
+
+It runs `report` and `plots` into `analysis/`, copies the figures it shows into
+`figures/`, reads the INCAR, KPOINTS, OUTCAR header, custodian corrections and
+launch plan of every VASP run of the tree (below each run's `run/exec/`), and
+writes `report.tex`: the decisions, child states, calculation settings, each
+child's results as tables and figures, and an execution appendix. Its sentences
+only state what follows mechanically from the numbers (space group preserved,
+gap direct or indirect, Born criterion, vanishing tensors, dynamic stability);
+there is no experimental comparison and no interpretation. With `latexmk` on
+the PATH it compiles `report.pdf`; otherwise it writes only `report.tex` and
+prints why. A child that did not succeed, or whose analysis failed, gets a
+one-line note instead of its section. The script exits 1 when a child analysis
+or the compilation failed (after writing everything else), or when the parent
+cannot be analysed at all (no `characterization.json`; then without a `report.tex`).
+
 The scripts are one shared module, `scripts/atomate2_postprocess.py`, and two
 entry points, identical in every package (a test pins them). Edit them in
-`atomate2-static/scripts/` and run `make sync-scripts`.
+`atomate2-static/scripts/` and run `make sync-scripts`. `scripts/latex` and its
+module `scripts/atomate2_latex.py` exist only in
+`atomate2-full-characterization/` and are not part of `make sync-scripts`.
 
 ## Requirements
 

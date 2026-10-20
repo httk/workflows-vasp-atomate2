@@ -232,6 +232,13 @@ def test_phonon_hook_converts_to_the_phonon_cell(tmp_path: Path, phonon_document
         cold["output"][name] = cold["output"][name][: output["temperatures"].index(200) + 1]
     report = _report(tmp_path / "cold", "atomate2-phonons", cold)
     assert "at_300K_per_formula_unit" not in report and "0-200 K" in report["at_300K_note"]
+    # Dynamic stability tolerates acoustic-sum-rule noise near Γ, not a real imaginary mode.
+    for frequency, stable in ((-0.01, True), (-0.5, False)):
+        noisy = json.loads(json.dumps(phonon_document))
+        noisy["output"]["phonon_bandstructure"]["bands"][0][0] = frequency  # branch 0, first q-point
+        report = _report(tmp_path / f"noise{frequency}", "atomate2-phonons", noisy)
+        assert report["lowest_frequency_THz"] == frequency and report["imaginary_tolerance_THz"] == 0.05
+        assert report["dynamically_stable"] is stable, frequency
     plots, _ = _postprocess(tmp_path / "plots", "atomate2-phonons", phonon_document, "plots")
     assert {path.name for path in plots.iterdir()} == {
         "phonon_band_structure.png",
@@ -465,3 +472,48 @@ def test_full_characterization_fails_for_an_unloadable_succeeded_child(
     report = json.loads((tmp_path / "report" / "report.json").read_text(encoding="utf-8"))
     assert report["failed_analyses"] == ["elastic load"]
     assert report["children"]["dielectric"]["state"] == "failed (c: m)"
+
+
+def test_latex_report_escapes_job_data(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``atomate2_latex`` imports beside the shared module, as its entry point does, and escapes every TeX special."""
+
+    monkeypatch.setattr(sys, "dont_write_bytecode", True)
+    monkeypatch.syspath_prepend(str(REPO_ROOT / "atomate2-full-characterization" / "scripts"))
+    monkeypatch.delitem(sys.modules, "atomate2_latex", raising=False)
+    latex = importlib.import_module("atomate2_latex")
+    assert latex._tex("\\ & % $ # _ { } ~ ^") == (
+        r"\textbackslash{} \& \% \$ \# \_ \{ \} \textasciitilde{} \textasciicircum{}"
+    )
+    assert latex._tex("a<b|c>ε") == r"a\textless{}b\textbar{}c\textgreater{}?"
+    # pdflatex refuses control characters; a line break inside a table cell would end its paragraph.
+    assert latex._tex("a\x00b\x08c\x0bd\x1fe\x7ff\tg\nh\r") == "a?b?c?d?e?f\tg h "
+    assert latex._label("\\Gamma-X") == latex._label("GAMMA-X") == r"$\Gamma$-X"
+    assert latex._label(None) == "--"
+    assert (latex._num(None), latex._num(True), latex._num(-0.0001, 2), latex._num(-1.25, 1)) == (
+        "--",
+        "yes",
+        "0.00",
+        r"\textminus{}1.2",
+    )
+
+
+def test_full_characterization_refuses_a_child_label_that_leaves_the_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Child labels name output directories: a job-written ``../x`` is a failed analysis, never a path."""
+
+    module = _postprocess_module(monkeypatch)
+    Workspace.initialize(tmp_path / "ws")
+    monkeypatch.setenv("HTTK_WORKFLOW_WORKSPACE_DIR", str(tmp_path / "ws"))
+    parent = tmp_path / "parent"
+    (parent / "data").mkdir(parents=True)
+    (parent / "job.json").write_text(json.dumps({"workflow": {"name": "atomate2.full-characterization"}}))
+    parts = {"../x": {"kind": "succeeded", "job_id": "00000000-0000-4000-8000-000000000000"}}
+    (parent / "data" / "characterization.json").write_text(json.dumps({"parts": parts, "decisions": {}}))
+    out = tmp_path / "out" / "report"
+    out.mkdir(parents=True)
+    with pytest.raises(module.AnalysisError, match="invalid label"):
+        module._run("report", module.Job.at(parent), out)
+    assert not (tmp_path / "out" / "x").exists()
+    report = json.loads((out / "report.json").read_text(encoding="utf-8"))
+    assert report["failed_analyses"] == ["../x (invalid label)"] and report["children"] == {}

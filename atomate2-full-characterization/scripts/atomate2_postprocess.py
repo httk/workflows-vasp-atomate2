@@ -19,6 +19,7 @@ import json
 import logging
 import math
 import os
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +30,8 @@ _EV_PER_JOULE_PER_MOL = 1 / (6.02214076e23 * 1.602176634e-19)
 _VASP_TO_VOIGT = [0, 1, 2, 4, 5, 3]
 _EXEC_TOKEN = "httk-jobflow-exec://"
 _DPI = 150
+#: Imaginary frequencies (THz) within this of zero are acoustic-sum-rule noise at and near Γ (0.05 THz = 1.7 cm⁻¹).
+_IMAGINARY_TOLERANCE_THZ = 0.05
 
 
 class AnalysisError(Exception):
@@ -697,15 +700,17 @@ def _report_phonons(output: dict, job: Job, out: Path) -> dict:
     cell = bands.structure
     units = cell.composition.get_reduced_composition_and_factor()[1]
     branch, point = np.unravel_index(np.argmin(bands.bands), bands.bands.shape)
-    lowest = bands.qpoints[point]
+    lowest, frequency = bands.qpoints[point], float(bands.bands[branch, point])
     report = {
         "formula": cell.composition.reduced_formula,
         "cell": "phonopy's primitive cell (phonon_bandstructure.structure)",
         "phonon_cell": _cell(cell, job),
         "formula_units_per_phonon_cell": units,
         "supercell_matrix": output.get("supercell_matrix"),
-        "has_imaginary_modes": output.get("has_imaginary_modes"),
-        "lowest_frequency_THz": float(bands.bands[branch, point]),
+        "has_imaginary_modes": output.get("has_imaginary_modes"),  # atomate2's flag, without a tolerance
+        "lowest_frequency_THz": frequency,
+        "imaginary_tolerance_THz": _IMAGINARY_TOLERANCE_THZ,
+        "dynamically_stable": frequency >= -_IMAGINARY_TOLERANCE_THZ,
         "lowest_frequency_qpoint": {"label": lowest.label, "frac": lowest.frac_coords.tolist()},
         # atomate2 applies it for VASP only when the (symmetrized) Born charges are not all zero.
         "non_analytical_correction": output.get("born") is not None
@@ -818,6 +823,11 @@ def _run_children(job: Job, out: Path, scripts: tuple[str, ...]) -> tuple[dict, 
     record = json.loads(job.result("characterization.json").read_text(encoding="utf-8"))
     reports, states, failed = {}, {}, []
     for label, child in _children(job, record).items():
+        # Labels name output directories: a job-written one like ../x must not leave the output directory.
+        if not re.fullmatch(r"[a-z_]+", label):
+            failed.append(f"{label} (invalid label)")
+            print(f"{label!r}: not analysed: a child label must match [a-z_]+", file=sys.stderr)
+            continue
         if isinstance(child, str):
             states[label] = child
             print(f"{label}: not analysed: {child}")
@@ -865,6 +875,7 @@ def _report_full(job: Job, out: Path) -> dict:
         "born_stable_zero_stress": elastic.get("born_stable_zero_stress"),
         "max_abs_equilibrium_stress_GPa": elastic.get("max_abs_equilibrium_stress_GPa"),
         "phonon_imaginary_modes": phonons.get("has_imaginary_modes"),
+        "phonons_dynamically_stable": phonons.get("dynamically_stable"),
         "zero_point_energy_eV_per_phonon_cell": phonons.get("zero_point_energy_eV_per_cell"),
         "decisions": record.get("decisions"),
         "children": {

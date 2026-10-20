@@ -92,11 +92,12 @@ def test_structure_energy_collect_hooks_are_identical() -> None:
 @pytest.mark.parametrize("directory", _DIRECTORIES + _COMPOSITE)
 def test_package_declares_the_shared_postprocess_scripts(directory: str) -> None:
     provider = load_workflow_package(REPO_ROOT / directory, register=False)
+    # Only the full characterization has a LaTeX report (scripts/latex, outside make sync-scripts).
+    names = ("report", "plots", "latex") if directory in _COMPOSITE else ("report", "plots")
     assert {name: script["file"] for name, script in provider.postprocess_scripts.items()} == {
-        "report": "scripts/report",
-        "plots": "scripts/plots",
+        name: f"scripts/{name}" for name in names
     }
-    for name in ("report", "plots"):
+    for name in names:
         # Committed modes come from git: the entry points must be 755.
         assert (REPO_ROOT / directory / "scripts" / name).stat().st_mode & 0o777 == 0o755, name
 

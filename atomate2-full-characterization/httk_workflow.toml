@@ -50,3 +50,7 @@ description = "writes report.txt and report.json (combined summary, decisions, c
 [workflow.postprocess.plots]
 file = "scripts/plots"
 description = "every succeeded child's report and figures under <label>/ (relax/, band_structure/, elastic/, dielectric/, phonons/)"
+
+[workflow.postprocess.latex]
+file = "scripts/latex"
+description = "a LaTeX report of the whole characterization (tables, figures, settings, execution) in report.tex, compiled to report.pdf when latexmk is on the PATH"

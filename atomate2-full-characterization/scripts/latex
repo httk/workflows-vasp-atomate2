@@ -1,0 +1,10 @@
+#!/usr/bin/env python3
+"""Write report.tex and, with latexmk, report.pdf of an atomate2.full-characterization job (see atomate2_latex.py)."""
+
+import sys
+
+sys.dont_write_bytecode = True  # never write into the package directory
+
+from atomate2_latex import main
+
+raise SystemExit(main())

@@ -21,6 +21,14 @@ atomate2's phonon analysis refuses it unless phonons runs on its own symmetrized
 primitive cell, whose site order differs. Phonons is then called at once with
 ``use_symmetrized_structure = "primitive"`` and computes its own Born charges
 (insulators; a deliberate duplicate of the dielectric child) or none (metals).
+Otherwise every child after the relaxation runs without spin polarization: the
+parent's ``function`` override ``update_user_incar_settings`` with ``ISPIN = 1`` comes
+first in its ``jobflow_overrides``. The jobflow runner applies every ``maker`` override
+before ``make()`` and every other kind after it, so a ``maker`` override of ``ISPIN``
+is overridden; only a ``function`` override ``update_user_incar_settings`` with
+``ISPIN = 2`` in that child's ``child_parameters`` re-enables spin. The relaxation, and
+every child of a magnetic structure, keeps atomate2's default ``ISPIN = 2``, which is
+how magnetism is detected.
 
 The steps that import atomate2 and pymatgen first export the ``atomate2.*`` and
 ``pymatgen.*`` settings as the variables those libraries read, as the jobflow
@@ -58,6 +66,13 @@ _OWNED = {
     "elastic": ("bulk_relax_maker",),
     "dielectric": (),
     "phonons": ("bulk_relax_maker", "born_maker", "use_symmetrized_structure"),
+}
+#: Children of a non-magnetic relaxation run without spin polarization; the relaxation itself keeps atomate2's
+#: ISPIN = 2, which is how magnetism is detected.
+_NO_SPIN = {
+    "kind": "function",
+    "function": "atomate2.vasp.powerups:update_user_incar_settings",
+    "kwargs": {"incar_updates": {"ISPIN": 1}},
 }
 
 
@@ -228,12 +243,13 @@ def plan(a: Attempt) -> None:
     # atomate2's phonon analysis check: nonzero moments need its symmetrized primitive cell.
     magmoms = structure.site_properties.get("magmom")
     magnetic = bool(magmoms is not None and np.any(np.asarray(magmoms) != 0.0))
+    spin = {} if magnetic else {"jobflow_overrides": [_NO_SPIN]}
     parts = {"relax": _part(relax)}
-    parts["band_structure"] = _call(a, "band_structure")
-    parts["elastic"] = _call(a, "elastic", {"equilibrium_stress": output["stress"]}, {"bulk_relax_maker": None})
+    parts["band_structure"] = _call(a, "band_structure", parameters=spin)
+    parts["elastic"] = _call(a, "elastic", {"equilibrium_stress": output["stress"]}, {"bulk_relax_maker": None} | spin)
     if insulator:
-        parts["dielectric"] = _call(a, "dielectric")
-    phonons = {"bulk_relax_maker": None} | ({} if insulator else {"born_maker": None})
+        parts["dielectric"] = _call(a, "dielectric", parameters=spin)
+    phonons = {"bulk_relax_maker": None} | ({} if insulator else {"born_maker": None}) | spin
     if magnetic:
         phonons["use_symmetrized_structure"] = "primitive"
         parts["phonons"] = _call(a, "phonons", {"total_dft_energy_per_formula_unit": energy}, phonons)
@@ -244,6 +260,8 @@ def plan(a: Attempt) -> None:
     else:
         parts["phonons"] = _call(a, "phonons", {"total_dft_energy_per_formula_unit": energy}, phonons)
         notes = ["metal: no dielectric child, phonons without non-analytical correction"]
+    if not magnetic:
+        notes.append("non-magnetic: the children after the relaxation run without spin polarization (ISPIN = 1)")
     decisions = {
         "band_gap": output["bandgap"],
         "band_gap_tolerance": SETTINGS.BANDGAP_TOL,
@@ -270,7 +288,8 @@ def progress(a: Attempt) -> None:
     dielectric = parts.get("dielectric")
     if dielectric is not None and dielectric["kind"] in _TERMINAL and "phonons" not in parts:
         inputs = {"total_dft_energy_per_formula_unit": a.state["energy_per_formula_unit"]}
-        parameters = {"bulk_relax_maker": None}
+        # Only a non-magnetic plan leaves phonons to this step.
+        parameters = {"bulk_relax_maker": None} | ({} if decisions["magnetic"] else {"jobflow_overrides": [_NO_SPIN]})
         if dielectric["kind"] == "succeeded":
             # Where atomate2's PhononMaker takes them from its own born_maker's task document.
             calculation = _flow_output(a.children["dielectric"])["calcs_reversed"][0]["output"]

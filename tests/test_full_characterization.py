@@ -6,6 +6,8 @@ test sees which calculations each child ran.
 """
 
 import json
+import shutil
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -63,11 +65,22 @@ _NELM = {
     "function": "atomate2.vasp.powerups:update_user_incar_settings",
     "kwargs": {"incar_updates": {"NELM": 150}},
 }
-#: A phonons override of a Maker field ``make()`` reads: the displacement runs' ENCUT.
+#: A phonons override of a Maker field ``make()`` reads: the displacement runs' ENCUT. Its ISPIN loses to the
+#: parent's non-magnetic ``function`` override, which the runner applies after every ``maker`` override.
 _DISPLACEMENT_ENCUT = {
     "kind": "maker",
-    "update": {"phonon_displacement_maker.input_set_generator.user_incar_settings.ENCUT": 555},
+    "update": {
+        "phonon_displacement_maker.input_set_generator.user_incar_settings.ENCUT": 555,
+        "phonon_displacement_maker.input_set_generator.user_incar_settings.ISPIN": 2,
+    },
 }
+#: The override the parent gives every child after the relaxation of a non-magnetic structure.
+_NO_SPIN = {
+    "kind": "function",
+    "function": "atomate2.vasp.powerups:update_user_incar_settings",
+    "kwargs": {"incar_updates": {"ISPIN": 1}},
+}
+_NO_SPIN_NOTE = "non-magnetic: the children after the relaxation run without spin polarization (ISPIN = 1)"
 
 
 def _jobs(workspace: Workspace) -> dict[str, tuple[Path, dict[str, Any]]]:
@@ -117,6 +130,37 @@ _CHILD_FIGURES = {
 }
 
 
+#: The section of each child's results in the ``latex`` report, and the figures it copies into ``figures/``.
+_LATEX_SECTIONS = {
+    "relax": "Structure",
+    "band_structure": "Electronic structure",
+    "elastic": "Elastic properties",
+    "dielectric": "Dielectric response",
+    "phonons": "Lattice dynamics",
+}
+_LATEX_FIGURES = {
+    "band_structure": {"band_structure_band_structure_dos.png"},
+    "elastic": {"elastic_stress_strain.png", "elastic_youngs_modulus.png"},
+    "phonons": {"phonons_phonon_band_structure_dos.png", "phonons_phonon_thermodynamics.png"},
+}
+
+
+def _check_latex(result: Any, succeeded: set[str], report: dict[str, Any], compiled: bool) -> str:
+    """The ``latex`` script's report.tex has a section for each succeeded child only, and exactly their figures."""
+
+    tex = (result.output_dir / "report.tex").read_text(encoding="utf-8")
+    assert f"Characterization of {report['formula']}" in tex
+    for label, title in _LATEX_SECTIONS.items():
+        assert (f"\\section{{{title}}}" in tex) is (label in succeeded), label
+    assert {path.name for path in (result.output_dir / "figures").iterdir()} == {
+        name for label in succeeded for name in _LATEX_FIGURES.get(label, ())
+    }
+    if compiled:
+        assert (result.output_dir / "report.pdf").read_bytes().startswith(b"%PDF"), result.stderr
+    assert "wrote report.tex" in result.stdout
+    return tex
+
+
 def _check_postprocess(workspace: Workspace, job_id: str, children: dict, succeeded: set[str], case: str) -> None:
     """The parent's report summarizes its children's documents; its plots script runs every succeeded child's."""
 
@@ -155,18 +199,47 @@ def _check_postprocess(workspace: Workspace, job_id: str, children: dict, succee
     for label in succeeded:
         (path,) = output.glob(f"**/plots/{label}")
         assert {child.name for child in path.iterdir()} == {"report.json", "report.txt", *_CHILD_FIGURES[label]}, label
+    package = load_workflow_package(REPO_ROOT / directory, register=False)
+    latexmk = shutil.which("latexmk") is not None
+    result = run_postprocess_script(package, "latex", _record(workspace, job_id))
+    assert result.returncode == 0, result.stdout + result.stderr
+    tex = _check_latex(result, succeeded, report, latexmk)
+    if case == "dielectric_failed":
+        state = report["children"]["dielectric"]["state"]
+        assert state.startswith("failed") and "\\textbf{Dielectric response:} not reported" in tex
+        assert f"\\texttt{{dielectric}}: {state.split(' ')[0]}" in tex
     if case == "metal":
-        # A succeeded child whose analysis fails: the others still run, then both scripts fail naming it.
+        # Without latexmk on the PATH, only report.tex is written, and the script says why.
+        bare = workspace.root.parent / "bare-path"
+        bare.mkdir()
+        (bare / "python3").symlink_to(sys.executable)
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setenv("PATH", str(bare))
+            result = run_postprocess_script(
+                package, "latex", _record(workspace, job_id), output_root=workspace.root.parent / "no-latexmk"
+            )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "report.pdf not compiled: latexmk is not on the PATH" in result.stdout
+        assert not (result.output_dir / "report.pdf").exists()
+        _check_latex(result, succeeded, report, False)
+        # A succeeded child whose analysis fails: the others still run, then the scripts fail naming it.
         for name in ("data/jobflow/jobflow-outputs.json", "run/jobflow-outputs.json"):
             source = children["elastic"][0] / name
             source.rename(source.with_suffix(".hidden"))
-        package = load_workflow_package(REPO_ROOT / directory, register=False)
         for script in ("report", "plots"):
             result = run_postprocess_script(package, script, _record(workspace, job_id))
             assert result.returncode == 1 and "elastic report" in result.stderr, script
             assert (result.output_dir / "relax" / "report.json").is_file(), script
         broken = json.loads((result.output_dir.parent / "report" / "report.json").read_text(encoding="utf-8"))
         assert broken["failed_analyses"] == ["elastic report"]
+        # The LaTeX report is still written, with a note in place of the elastic section; the run reused above's
+        # output directory, so no stale elastic analysis or figure may survive.
+        result = run_postprocess_script(package, "latex", _record(workspace, job_id))
+        assert result.returncode == 1, result.stdout + result.stderr
+        tex = _check_latex(result, succeeded - {"elastic"}, report, latexmk)
+        assert "\\textbf{Elastic properties:} not reported" in tex
+        # Both analyses report the failed child report; it is listed once.
+        assert tex.count("\\item elastic report") == 1 and "\\item elastic plots" in tex
 
 
 def _relaxes_cell(run: dict[str, Any]) -> bool:
@@ -188,8 +261,10 @@ def test_relax_failure_stops_the_characterization(tmp_path: Path) -> None:
     assert set(children) == {"relax"}
     # No characterization.json: the report script says so and fails.
     package = load_workflow_package(REPO_ROOT / "atomate2-full-characterization", register=False)
-    result = run_postprocess_script(package, "report", _record(workspace, job_id))
-    assert result.returncode == 1 and "characterization.json" in result.stderr
+    for script in ("report", "latex"):
+        result = run_postprocess_script(package, script, _record(workspace, job_id))
+        assert result.returncode == 1 and "characterization.json" in result.stderr, script
+    assert not (result.output_dir / "report.tex").exists()
 
 
 def test_cif_input_is_staged_as_a_poscar(tmp_path: Path) -> None:
@@ -288,6 +363,17 @@ def test_full_characterization(tmp_path: Path, case: str, test_profile: TestProf
     assert tight["function"] == "atomate2.vasp.powerups:update_user_incar_settings"
     assert tight["kwargs"]["incar_updates"]["EDIFF"] == pytest.approx(1e-7)
     assert given_overrides == child_parameters.get("relax", {}).get("jobflow_overrides", [])
+    # The relaxation keeps atomate2's spin polarization, which detects magnetism; after a non-magnetic one every
+    # other child runs without it, the parent's ISPIN override first, then the given ones.
+    assert {run["incar"]["ISPIN"] for run in runs["relax"]} == {2}
+    for label in set(children) - {"relax"}:
+        overrides = children[label][1]["parameters"].get("jobflow_overrides", [])
+        if magnetic:
+            assert not [o for o in overrides if "ISPIN" in o.get("kwargs", {}).get("incar_updates", {})], label
+            assert not [run for run in runs[label] if run["incar"].get("ISPIN") == 1], label
+        else:
+            assert overrides == [_NO_SPIN, *child_parameters.get(label, {}).get("jobflow_overrides", [])], label
+            assert {run["incar"]["ISPIN"] for run in runs[label]} == {1}, label
     # Only relaxations move the cell (ISIF 3 with ionic steps): every other run keeps it or is a static.
     assert not [label for label in children if label != "relax" for run in runs[label] if _relaxes_cell(run)]
     assert len(runs["band_structure"]) == 3
@@ -342,6 +428,7 @@ def test_full_characterization(tmp_path: Path, case: str, test_profile: TestProf
     assert {label for label, part in characterization["parts"].items() if part["kind"] == "succeeded"} == succeeded
     assert (decisions["insulator"], decisions["magnetic"]) == (insulator, magnetic)
     assert decisions["child_parameters"] == child_parameters
+    assert (_NO_SPIN_NOTE in decisions["notes"]) is not magnetic
     if case == "metal":
         # The parent read the workspace's atomate2 settings, as the children do.
         assert (decisions["band_gap_tolerance"], decisions["symprec"]) == (0.5, 0.01)
