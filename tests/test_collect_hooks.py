@@ -7,8 +7,10 @@ emmet builds the task document from its outputs, as atomate2's StaticMaker does.
 import importlib.util
 import json
 import logging
+import os
 import runpy
 import subprocess
+import time
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -29,6 +31,7 @@ from conftest import FAKE_PSP, FAKE_VASP
 REPO_ROOT = Path(__file__).resolve().parent.parent
 _PACKAGES = ("atomate2-static", "atomate2-relax", "atomate2-tight-relax", "atomate2-double-relax")
 _HAS_ANALYSE = importlib.util.find_spec("httk.analyse") is not None
+_PAYLOAD = "jobs/job--12345678-1234-4234-8234-123456789abc"
 
 
 @pytest.fixture(scope="module")
@@ -175,3 +178,77 @@ def test_collect_hook_yields_nothing_for_a_child_job(tmp_path: Path) -> None:
     # The child jobs running the flow's atomate2 jobs share the workflow; their parent holds the result.
     record = _record(tmp_path, "atomate2-double-relax", transactional=False, parameters={"jobflow_child_job": "x.json"})
     assert _collect("atomate2-double-relax", record) == {}
+
+
+def test_collect_hook_yields_the_task_document_of_a_vasp_child_job(
+    tmp_path: Path, task_document: dict, caplog: pytest.LogCaptureFixture
+) -> None:
+    record = _record(tmp_path, "atomate2-relax", transactional=False, parameters={"jobflow_child_job": "x.json"})
+    # An absent or empty child-outputs.json yields nothing.
+    assert _collect("atomate2-relax", record) == {}
+    path = tmp_path / _PAYLOAD / "run" / "child-outputs.json"
+    path.parent.mkdir(parents=True)
+    path.write_text("", encoding="utf-8")
+    assert _collect("atomate2-relax", record) == {}
+    task = json.loads(json.dumps(task_document))
+    task["calcs_reversed"][0]["vasp_version"] = "6.6.0"
+    task["run_stats"]["overall"].update(cores=32, elapsed_time=2.99)
+    path.write_text(json.dumps({"docs": [{"output": task}], "response": {}}), encoding="utf-8")
+    document = _collect("atomate2-relax", record)["task_document"]
+    assert (document.url, document.name, document.size) == (
+        f"{_PAYLOAD}/run/child-outputs.json",
+        path.name,
+        path.stat().st_size,
+    )
+    assert document.description == "VASP 6.6.0, PBEsol Static, 32 cores, 2.99 s"
+    # A missing part is left out.
+    del task["calc_type"]
+    path.write_text(json.dumps({"docs": [{"output": task}], "response": {}}), encoding="utf-8")
+    assert _collect("atomate2-relax", record)["task_document"].description == "VASP 6.6.0, 32 cores, 2.99 s"
+    # A child job that ran no VASP (a generator or a fit) yields nothing.
+    path.write_text(json.dumps({"docs": [{"output": [1, 2]}], "response": {}}), encoding="utf-8")
+    assert _collect("atomate2-relax", record) == {}
+    # A symlinked child-outputs.json is not followed: nothing, with a warning.
+    target = path.with_name("elsewhere.json")
+    path.rename(target)
+    path.symlink_to(target)
+    with caplog.at_level(logging.WARNING):
+        assert _collect("atomate2-relax", record) == {}
+    assert "not a regular file" in caplog.text
+
+
+def test_collect_hook_hands_over_the_port_structure_only_from_the_payload(tmp_path: Path, task_document: dict) -> None:
+    from httk.workflow.hookapi import Collected
+
+    _write(tmp_path / "run" / "jobflow-outputs.json", task_document)
+    files = tmp_path / _PAYLOAD / "files"
+    files.mkdir(parents=True)
+    structure = Structure.from_dict(task_document["output"]["structure"])
+    (files / "structure.json").write_text(json.dumps(structure.as_dict()), encoding="utf-8")
+    structure.to(filename=str(files / "POSCAR"))
+    structure.to(filename=str(files / "structure.cif"))
+    (files / "structure.yaml").write_text("{}", encoding="utf-8")
+    (files / "link.json").symlink_to(files / "structure.json")
+    os.mkfifo(files / "fifo.json")
+
+    def collect(value: str) -> object:
+        port = {"jobflow_inputs": {"structure": {"kind": "path", "value": value}}}
+        return _collect("atomate2-relax", _record(tmp_path, "atomate2-relax", transactional=False, parameters=port))
+
+    # A JSON file is a pymatgen structure dictionary, any other a structure file read as the jobflow runner reads it.
+    for name in ("structure.json", "POSCAR", "structure.cif"):
+        result = collect(f"files/{name}")
+        assert isinstance(result, Collected), name
+        assert isinstance(result.inputs["initial_structure"], UnitcellStructureView), name
+    for value in ("../../run/jobflow-outputs.json", str(files / "structure.json")):
+        with pytest.raises(ValueError, match="not relative to the job's payload"):
+            collect(value)
+    # pymatgen's name-based reader would hand other names (YAML, monty JSON) to monty's decoder.
+    with pytest.raises(ValueError, match="is not a .json, POSCAR/CONTCAR, .vasp or .cif file"):
+        collect("files/structure.yaml")
+    # A symlink and a FIFO are refused at once, never followed or opened for reading.
+    for name in ("link.json", "fifo.json"):
+        started = time.monotonic()
+        with pytest.raises(ValueError, match=f"cannot read files/{name}"):
+            collect(f"files/{name}")
+        assert time.monotonic() - started < 10, name

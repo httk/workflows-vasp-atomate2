@@ -6,6 +6,7 @@ The values are checked against the fake's synthetic physics, including the compo
 orders and unit conversions the hooks apply.
 """
 
+import ast
 import importlib.util
 import json
 import re
@@ -24,7 +25,7 @@ pytest.importorskip("httk.analyse")
 import numpy as np
 from httk.analyse import property_records
 from httk.atomistic import UnitcellStructureView
-from httk.core import DataRecord, FileRecord
+from httk.core import DataRecord, FileRecord, content_id
 from httk.workflow import Workspace
 from httk.workflow.collecting import JobRecord
 from httk.workflow.packages import load_workflow_package
@@ -355,6 +356,91 @@ def test_physics_hooks_share_their_helpers() -> None:
         assert match, package
         blocks.add(match.group(0))
     assert len(blocks) == 1
+    # The structure, port and sub-job helpers are also the structure/energy hook's, the structure ones the parent's.
+    every = {"_sanitized", "_normalized", "_structure_view"}
+    packages = every | {"_declared_roles", "_port_document", "_port_structure", "_with_inputs", "_child_task_document"}
+    sources: dict[str, set[str | None]] = {}
+    for path in REPO_ROOT.glob("atomate2-*/collect.py"):
+        text = path.read_text(encoding="utf-8")
+        functions = {node.name: node for node in ast.parse(text).body if isinstance(node, ast.FunctionDef)}
+        expected = every if path.parent.name == "atomate2-full-characterization" else packages
+        assert expected <= set(functions), path.parent.name
+        for name in expected:
+            sources.setdefault(name, set()).add(ast.get_source_segment(text, functions[name]))
+    assert {name: len(found) for name, found in sources.items()} == dict.fromkeys(packages, 1)
+
+
+def test_structure_view_drops_only_physics_free_site_properties() -> None:
+    hook = runpy.run_path(str(REPO_ROOT / "atomate2-full-characterization" / "collect.py"))
+    plain: Any = silicon()
+
+    def with_properties(**properties: list) -> dict:
+        structure = plain.copy()
+        for name, values in properties.items():
+            structure.add_site_property(name, values)
+        return structure.as_dict()
+
+    reference = content_id(hook["_structure_view"](plain.as_dict()))
+    zero = with_properties(magmom=[-0.0, 0.0] * 4, phonopy_masses=[28.0855] * 8)
+    assert hook["_normalized"](zero).site_properties == {}
+    assert content_id(hook["_structure_view"](zero)) == reference
+    magnetic = with_properties(magmom=[1.0, -1.0] * 4, phonopy_masses=[28.0855] * 8)
+    assert hook["_normalized"](magnetic).site_properties == {"magmom": [1.0, -1.0] * 4}
+    assert content_id(hook["_structure_view"](magnetic)) != reference
+
+
+def test_structure_view_never_decodes_job_written_objects(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from pymatgen.core import Structure
+
+    hook = runpy.run_path(str(REPO_ROOT / "atomate2-full-characterization" / "collect.py"))
+    plain: Any = silicon()
+    # The sanitized document is the same structure: the content id is the one the unsanitized document gives.
+    reference = content_id(UnitcellStructureView(Structure.from_dict(plain.as_dict())))
+    assert content_id(hook["_structure_view"](plain.as_dict())) == reference
+    # An importable module whose from_dict records that it ran: monty's decoder would import and call it.
+    (tmp_path / "gadget_probe.py").write_text(
+        "class Probe:\n    @classmethod\n    def from_dict(cls, d):\n        raise SystemExit('decoded')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.delitem(sys.modules, "gadget_probe", raising=False)
+    gadget = {"@module": "gadget_probe", "@class": "Probe"}
+    document = plain.as_dict()
+    document["properties"] = {"x": gadget}
+    for site in document["sites"]:
+        site["properties"] = {"magmom": -0.0, "x": gadget}
+        site["species"][0]["x"] = gadget
+    assert content_id(hook["_structure_view"](document)) == reference
+    assert "gadget_probe" not in sys.modules
+    with pytest.raises(SystemExit, match="decoded"):  # the control: unsanitized, the document is decoded
+        Structure.from_dict(document)
+    # A species' spin is kept: cells that differ only in it stay distinct.
+    spins = [plain.as_dict(), plain.as_dict()]
+    for spin, spinned in zip((2, 4), spins, strict=True):
+        spinned["sites"][0]["species"][0].update(oxidation_state=2, spin=spin)
+    assert hook["_sanitized"](spins[0])["sites"][0]["species"] == [
+        {"element": "Si", "occu": 1, "oxidation_state": 2, "spin": 2}
+    ]
+    assert content_id(hook["_structure_view"](spins[0])) != content_id(hook["_structure_view"](spins[1]))
+    document["sites"][0]["abc"] = ["0", 0, 0]
+    with pytest.raises(ValueError, match="expected a number"):
+        hook["_sanitized"](document)
+
+
+def test_phonon_cell_is_the_input_only_when_it_is_the_same_cell() -> None:
+    same_cell = runpy.run_path(str(REPO_ROOT / "atomate2-phonons" / "collect.py"))["_same_cell"]
+    plain: Any = silicon()
+    noisy = plain.copy()
+    noisy.lattice = noisy.lattice.__class__(plain.lattice.matrix + 4e-16)
+    noisy.add_site_property("phonopy_masses", [28.0855] * 8)
+    assert same_cell(noisy.as_dict(), plain.as_dict())
+    # Oxidation states and the cell's charge are part of the cell.
+    ionic = plain.copy()
+    ionic.add_oxidation_state_by_site([2, -2] * 4)
+    assert not same_cell(ionic.as_dict(), plain.as_dict())
+    charged = plain.as_dict()
+    charged["charge"] = 1.0
+    assert not same_cell(charged, plain.as_dict())
 
 
 def _postprocess_module(monkeypatch: pytest.MonkeyPatch) -> Any:

@@ -9,10 +9,14 @@ they are converted to eV and eV/K per phonon cell.
 """
 
 # --- shared helpers: identical in every physics package's collect.py (a test pins this block) ---
+import hashlib
 import importlib.util
 import json
 import logging
 import math
+import os
+import stat
+from pathlib import PurePosixPath
 
 from httk.core import DataRecord, FileRecord
 from httk.core.digests import sha256_file
@@ -47,19 +51,214 @@ def _file(record, path):
 
 
 def _structure(path, document):
-    """Adopt a pymatgen structure dictionary as an httk-atomistic structure."""
+    """Adopt a pymatgen structure dictionary of the document at *path* as an httk-atomistic structure."""
 
+    if not isinstance(document, dict):
+        raise ValueError(f"{path}: expected a structure document, found {type(document).__name__}")  # noqa: TRY004 (a malformed document is a collect ValueError)
+    return _structure_view(document)
+
+
+def _declared_roles(record, kind):
+    """Return the ``inputs`` or ``outputs`` roles of the job's own workflow declaration."""
+
+    entry = record.declarations.get("workflow") or {}
+    document = entry.get("observed") or entry.get("declared") or {}
+    return {role["name"] for role in document.get(kind, ())}
+
+
+def _sanitized(document):
+    """Return the plain-data part of a pymatgen structure dictionary, the only part ``Structure.from_dict`` may see.
+
+    ``Structure.from_dict`` passes site properties through monty's decoder, which imports the modules and calls
+    the ``from_dict`` methods a document names. A job writes these documents, so only the lattice matrix, each
+    site's species (element, oxidation state, spin, occupancy) and fractional coordinates, a numeric ``magmom`` and
+    the structure's charge are kept; everything else (``phonopy_masses`` included) is dropped.
+
+    :raises ValueError: If one of the kept members is not plain JSON data of its shape.
+    """
+
+    def is_number(value):
+        return isinstance(value, int | float) and not isinstance(value, bool)
+
+    def number(value):
+        if not is_number(value):
+            raise ValueError(f"structure document: expected a number, found {value!r}")
+        return value
+
+    def numbers(value, length):
+        if not isinstance(value, list) or len(value) != length:
+            raise ValueError(f"structure document: expected a list of {length} numbers, found {value!r}")
+        return [number(item) for item in value]
+
+    lattice = document.get("lattice") if isinstance(document, dict) else None
+    matrix = lattice.get("matrix") if isinstance(lattice, dict) else None
+    sites = document.get("sites") if isinstance(document, dict) else None
+    if not isinstance(matrix, list) or len(matrix) != 3 or not isinstance(sites, list):
+        raise ValueError("structure document: expected a lattice matrix and a list of sites")
+    clean = {"lattice": {"matrix": [numbers(row, 3) for row in matrix]}, "sites": []}
+    if document.get("charge") is not None:
+        clean["charge"] = number(document["charge"])
+    for site in sites:
+        species = site.get("species") if isinstance(site, dict) else None
+        if not isinstance(species, list) or not species or not all(isinstance(item, dict) for item in species):
+            raise ValueError(f"structure document: expected a site with a list of species, found {site!r}")
+        kept = []
+        for item in species:
+            if not isinstance(item.get("element"), str):
+                raise ValueError(f"structure document: expected an element symbol, found {item.get('element')!r}")  # noqa: TRY004 (a malformed document is a collect ValueError)
+            entry = {"element": item["element"], "occu": number(item.get("occu"))}
+            for key in ("oxidation_state", "spin"):
+                if item.get(key) is not None:
+                    entry[key] = number(item[key])
+            kept.append(entry)
+        clean_site = {"species": kept, "abc": numbers(site.get("abc"), 3)}
+        properties = site.get("properties")
+        magmom = properties.get("magmom") if isinstance(properties, dict) else None
+        if is_number(magmom) or (isinstance(magmom, list) and magmom and all(map(is_number, magmom))):
+            clean_site["properties"] = {"magmom": magmom}
+        clean["sites"].append(clean_site)
+    return clean
+
+
+def _normalized(document):
+    """Return a pymatgen structure dictionary as a structure of its physics alone (see ``_sanitized``).
+
+    VASP reports the moments of a non-magnetic cell as zeros (``-0.0`` included); they would store physically
+    identical cells as distinct entries, so all-zero moments are dropped. Nonzero moments are kept.
+    """
     try:
         from pymatgen.core import Structure
     except ImportError as exc:
         raise ValueError("collecting atomate2 documents needs pymatgen; install it where you collect") from exc
+    import numpy as np
+
+    structure = Structure.from_dict(_sanitized(document))
+    properties = structure.site_properties
+    if "magmom" in properties and not np.any(np.asarray(properties["magmom"], dtype=float)):
+        structure.remove_site_property("magmom")
+    return structure
+
+
+def _structure_view(document):
+    """Adopt a pymatgen structure dictionary, normalized by ``_normalized``, as an httk-atomistic structure."""
+
     try:
         from httk.atomistic import UnitcellStructureView
     except ImportError as exc:
         raise ValueError("collecting atomate2 documents needs httk-atomistic; install it where you collect") from exc
+    return UnitcellStructureView(_normalized(document))
+
+
+def _port_document(record):
+    """Return the pymatgen structure dictionary of the file staged for the job's jobflow ``structure`` port, or ``None``.
+
+    Only a ``path`` port member of a job whose declaration has an ``initial_structure`` input counts. The file is
+    read with ``JobRecord.read_file`` (below the job's payload, bounded, never through a symlink or a special
+    file) and parsed by its name: a ``.json`` file as a pymatgen structure dictionary, a ``POSCAR``/``CONTCAR``
+    or ``.vasp`` file as a POSCAR and a ``.cif`` file as a CIF. Any other name is refused, since pymatgen's
+    name-based reader would hand it to monty's decoder.
+    """
+    inputs = record.parameter("jobflow_inputs", None)
+    member = inputs.get("structure") if isinstance(inputs, dict) else None
+    if not isinstance(member, dict) or member.get("kind") != "path":
+        return None
+    if "initial_structure" not in _declared_roles(record, "inputs"):
+        return None
+    value = member.get("value")
+    relative = PurePosixPath(value) if isinstance(value, str) else None
+    if relative is None or relative.is_absolute() or ".." in relative.parts:
+        raise ValueError(f"{record.payload}: the structure port's path {value!r} is not relative to the job's payload")
+    suffix = relative.suffix.lower()
+    if suffix == ".json":
+        fmt = None
+    elif suffix == ".vasp" or relative.name.upper().startswith(("POSCAR", "CONTCAR")):
+        fmt = "poscar"
+    elif suffix == ".cif":
+        fmt = "cif"
+    else:
+        raise ValueError(
+            f"{record.payload}: the structure port's file {value!r} is not a .json, POSCAR/CONTCAR, .vasp or .cif file"
+        )
+    data = record.read_file(relative.as_posix(), limit=16 * 2**20)
+    if fmt is not None:
+        try:
+            from pymatgen.core import Structure
+        except ImportError as exc:
+            raise ValueError("collecting atomate2 documents needs pymatgen; install it where you collect") from exc
+        return Structure.from_str(data.decode("utf-8"), fmt=fmt).as_dict()
+    document = json.loads(data)
     if not isinstance(document, dict):
-        raise ValueError(f"{path}: expected a structure document, found {type(document).__name__}")  # noqa: TRY004 (a malformed document is a collect ValueError)
-    return UnitcellStructureView(Structure.from_dict(document))
+        raise ValueError(f"{record.payload / relative}: expected a structure document, found {type(document).__name__}")  # noqa: TRY004 (a malformed document is a collect ValueError)
+    return document
+
+
+def _port_structure(record, document=None):
+    """Return the structure the job's jobflow ``structure`` port consumed, or ``None`` (see ``_port_document``).
+
+    *document* is the port document when the caller has already read it.
+    """
+    document = _port_document(record) if document is None else document
+    return None if document is None else _structure_view(document)
+
+
+def _with_inputs(record, outputs, document=None):
+    """Return *outputs*, with the port structure as the ``initial_structure`` input when the job has one.
+
+    *document* is the port document when the caller has already read it.
+    """
+    structure = _port_structure(record, document)
+    if structure is None:
+        return outputs
+    from httk.workflow.hookapi import Collected
+
+    return Collected(outputs, {"initial_structure": structure})
+
+
+def _child_task_document(record):
+    """Return a jobflow child job's VASP task document as its ``task_document`` role, else nothing.
+
+    A child's own result is ``child-outputs.json`` in its workdir, ``run/`` below its payload, read with
+    ``JobRecord.read_file``. For a job that ran VASP its ``docs[0]["output"]`` is the emmet task document,
+    summarized in the file's description. Other atomate2 jobs (generators, fits), an absent or empty file and,
+    with a warning, anything but a regular file (a symlink included) yield nothing.
+    """
+    relative = "run/child-outputs.json"
+    try:
+        mode = os.lstat(record.payload / relative).st_mode
+    except FileNotFoundError:
+        return {}
+    if not stat.S_ISREG(mode):
+        _LOGGER.warning("%s: %s is not a regular file; its task document is not collected", record.job_key, relative)
+        return {}
+    # ponytail: 256 MiB covers task documents of large relaxations (a 2-atom cell's is 2 MB); raise it if one is refused.
+    data = record.read_file(relative, limit=256 * 2**20)
+    if not data.strip():
+        return {}
+    document = json.loads(data)
+    docs = document.get("docs") if isinstance(document, dict) else None
+    task = docs[0].get("output") if isinstance(docs, list) and docs and isinstance(docs[0], dict) else None
+    calculations = task.get("calcs_reversed") if isinstance(task, dict) else None
+    if not isinstance(calculations, list) or not calculations:
+        return {}
+    version = calculations[0].get("vasp_version") if isinstance(calculations[0], dict) else None
+    overall = (task.get("run_stats") or {}).get("overall") or {}
+    cores, elapsed = overall.get("cores"), overall.get("elapsed_time")
+    parts = (
+        f"VASP {version}" if version else None,
+        task.get("calc_type"),
+        None if cores is None else f"{cores} cores",
+        None if elapsed is None else f"{elapsed:g} s",
+    )
+    return {
+        "task_document": FileRecord(
+            (record.payload_path / relative).as_posix(),
+            "child-outputs.json",
+            size=len(data),
+            media_type="application/json",
+            sha256=hashlib.sha256(data).hexdigest(),
+            description=", ".join(str(part) for part in parts if part) or None,
+        )
+    }
 
 
 def _analyse(roles):
@@ -96,6 +295,26 @@ def _number(path, value, what):
 _EV_PER_JOULE_PER_MOL = 1 / (6.02214076e23 * 1.602176634e-19)
 
 
+def _same_cell(first, second):
+    """Whether two pymatgen structure dictionaries are one cell up to float re-serialization noise.
+
+    Same species (with oxidation states) in the same order, the same charge, lattice vectors and fractional coordinates within 1e-8 (Angstrom and
+    fractional units), and the same site properties after ``_normalized``.
+    """
+    import numpy as np
+
+    first, second = _normalized(first), _normalized(second)
+    # ponytail: an absolute 1e-8 tolerance absorbs phonopy's re-serialization (observed 4e-16) but no real change;
+    # a symmetry-aware structure matcher would be needed to also merge reordered or re-chosen cells.
+    return (
+        [site.species_string for site in first] == [site.species_string for site in second]
+        and first.charge == second.charge
+        and np.allclose(first.lattice.matrix, second.lattice.matrix, rtol=0, atol=1e-8)
+        and np.allclose(first.frac_coords, second.frac_coords, rtol=0, atol=1e-8)
+        and first.site_properties == second.site_properties
+    )
+
+
 def collect(record):
     """Return the relaxed structure, the phonon cell and its phonon band structure, DOS and thermodynamics.
 
@@ -104,24 +323,31 @@ def collect(record):
     :raises ValueError: If pymatgen or httk-atomistic is missing, or the document has no phonon band structure.
     """
     if record.parameter("jobflow_child_job", None) is not None:
-        return {}
+        return _child_task_document(record)
     path, document = _flow_output(record)
     band_structure = document.get("phonon_bandstructure")
     if not isinstance(band_structure, dict) or not isinstance(band_structure.get("structure"), dict):
         raise ValueError(f"{path}: the phonon document has no phonon_bandstructure with a structure")  # noqa: TRY004 (a malformed document is a collect ValueError)
-    cell = _structure(path, band_structure["structure"])
+    cell_document = band_structure["structure"]
+    initial = _port_document(record)
+    if initial is not None and _same_cell(cell_document, initial):
+        # phonopy re-serializes the cell it was given; the input's own document makes the two one entry.
+        cell_document = initial
+    cell = _structure(path, cell_document)
     outputs = {"phonon_cell": cell, "task_document": _file(record, path)}
     if isinstance(document.get("structure"), dict):
         outputs["relaxed_structure"] = _structure(path, document["structure"])
     roles = "phonon_band_structure, phonon_density_of_states, vibrational_thermodynamics and zero_point_energy"
     if not _analyse(roles):
-        return outputs
+        return _with_inputs(record, outputs, initial)
 
     import numpy as np
-    from pymatgen.core import Structure
     from pymatgen.phonon.bandstructure import PhononBandStructureSymmLine
 
-    bands = PhononBandStructureSymmLine.from_dict(band_structure)
+    # Only the plain-data part of the job-written structure may reach pymatgen's decoder.
+    bands = PhononBandStructureSymmLine.from_dict(
+        {**band_structure, "structure": _sanitized(band_structure["structure"])}
+    )
     if len(bands.bands) != 3 * len(band_structure["structure"]["sites"]):
         raise ValueError(
             f"{path}: {len(bands.bands)} phonon modes for a {len(band_structure['structure']['sites'])}-site cell"
@@ -145,7 +371,7 @@ def collect(record):
         )
     temperatures = document.get("temperatures")
     if temperatures:
-        units = Structure.from_dict(band_structure["structure"]).composition.get_reduced_composition_and_factor()[1]
+        units = _normalized(band_structure["structure"]).composition.get_reduced_composition_and_factor()[1]
         scale = units * _EV_PER_JOULE_PER_MOL
         series = {
             name: [_number(path, value, source) * scale for value in document[source]]
@@ -163,4 +389,4 @@ def collect(record):
             outputs["zero_point_energy"] = _property(
                 "thermodynamics/zero_point_energy", series["helmholtz_free_energies"][0]
             )
-    return outputs
+    return _with_inputs(record, outputs, initial)

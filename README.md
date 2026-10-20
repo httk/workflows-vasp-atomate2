@@ -348,13 +348,25 @@ The physics hooks share their helper code (a test pins it).
 
 ### Child jobs and provenance
 
-The child jobs that run the flow's individual atomate2 jobs yield nothing;
-their parent collects the result. Each child is still collected as a run, with
-every output role reported as unfulfilled.
+Each package's hook hands over the structure its `structure` port consumed,
+the pymatgen JSON file the jobflow runner staged in the job's payload, as the
+run's `initial_structure` input, so the `product_of` links to
+`initial_structure` resolve; this is how each child of a full characterization
+links to the relaxed structure. Structures are normalized when collected: a
+`magmom` site property whose moments are all zero and phonopy's
+`phonopy_masses` are dropped (nonzero moments are kept), so the same cell is
+stored once whichever calculation reported it, and the phonon cell is stored as
+the phonons job's input structure when it is that cell up to phonopy's
+re-serialization (within 1e-8).
 
-A run's input edges come only from a provenance document the caller supplies,
-as for any *httk₂* job. Without one, the `product_of` links to
-`initial_structure` are reported as unlinked.
+The child jobs that run the flow's individual atomate2 jobs and ran VASP yield
+their own task document, `child-outputs.json` in their workdir, as
+`task_document`, described by a one-line summary such as
+`VASP 6.6.0, PBEsol NSCF Uniform, 32 cores, 2.99 s`; the others (generators
+and fits) yield nothing. Their parent collects the flow's result. Each child is
+still collected as a run, with its other output roles reported as unfulfilled
+and its `task_document` as unlinked from `initial_structure`, which only its
+parent consumed.
 
 ## Postprocessing
 
@@ -435,8 +447,10 @@ module `scripts/atomate2_latex.py` exist only in
 - The next *httk-workflow* release after 2.1.1. The packages do not run at all
   on *httk-workflow* 2.1.1 or earlier, which lack the jobflow task-document
   serialization, the references to moved job directories and the settings
-  mapping. The `requires` floor still names 2.1.1, because floors name released
-  versions; it will be raised at that release.
+  mapping, and whose collect hooks cannot hand over the consumed structure
+  without `httk.workflow.hookapi.Collected`. The `requires` floor still names
+  2.1.1, because floors name released versions; it will be raised at that
+  release.
 - `atomate2` (with pymatgen, custodian and emmet) where the jobs run.
 - *httk-atomistic* and `pymatgen` where the jobs are collected.
 - *httk-analyse* where the jobs are collected, for the band-gap records and

@@ -20,8 +20,9 @@ pytest.importorskip("httk.analyse")
 pytest.importorskip("phonopy")
 
 from httk.atomistic import UnitcellStructureView
-from httk.workflow import Workspace, collect, job_records
-from httk.workflow.collecting import JobRecord
+from httk.core import FileRecord, Run
+from httk.workflow import Workspace, collect, job_records, store_collected
+from httk.workflow.collecting import CollectedJob, JobRecord
 from httk.workflow.introspection import resolve_job
 from httk.workflow.packages import load_workflow_package
 from httk.workflow.postprocessing import run_postprocess_script
@@ -242,6 +243,64 @@ def _check_postprocess(workspace: Workspace, job_id: str, children: dict, succee
         assert tex.count("\\item elastic report") == 1 and "\\item elastic plots" in tex
 
 
+def _stored_run(store: Any, run_id: str) -> Run:
+    """The stored run of one entry id."""
+
+    searcher = store.searcher()
+    variable = searcher.variable(Run)
+    searcher.add(variable.id == run_id)
+    return next(iter(searcher.results(entry=variable))).entry
+
+
+def _check_collected(
+    workspace: Workspace, items: list[CollectedJob], job_id: str, children: dict, succeeded: set[str]
+) -> None:
+    """Children hand over their port structure, one relaxed cell is one entry, VASP sub-jobs yield their documents."""
+
+    from httk.store import Backend, SqlStore  # pyright: ignore[reportMissingImports]
+
+    collected = {item.record.job_id: item for item in items}
+    for label in succeeded:
+        item = collected[children[label][1]["id"]]
+        assert not item.products_unlinked, (label, item.products_unlinked)
+        assert "initial_structure" in {edge.label for edge in item.run.inputs}, label
+    # The jobflow sub-jobs that ran VASP are those holding a fake VASP invocation log.
+    vasp = {
+        log.relative_to(workspace.root).parts[2]
+        for log in workspace.root.glob("jobs/*/*/run/**/fake-vasp-invocations.jsonl")
+    }
+    subjobs = [item for item in items if item.record.parameter("jobflow_child_job", None) is not None]
+    assert {item.record.payload.name in vasp for item in subjobs} == {True, False}
+    for item in subjobs:
+        document = item.outputs.get("task_document")
+        if item.record.payload.name in vasp:
+            assert isinstance(document, FileRecord) and document.description, item.record.job_key
+            assert document.name == "child-outputs.json" and document.description.startswith("VASP ")
+        else:
+            assert document is None, item.record.job_key
+
+    database = workspace.root.parent / "collected.sqlite"
+    reports = store_collected(items, str(database), id_base="httk.test")
+    assert not [report for report in reports if "storage_error" in report]
+    with Backend.sqlite(database) as backend:
+        store = SqlStore(backend)
+        runs = {report["job_id"]: _stored_run(store, report["stored"]["run"]) for report in reports}
+
+    def edge(label: str, role: str) -> str:
+        run = runs[children[label][1]["id"]]
+        return next(edge.entry_id for edge in (*run.inputs, *run.outputs) if edge.label == role)
+
+    # The relaxed cell and the cell every later child consumed are one entry, as are the standardized cell and
+    # the cell the relaxation consumed.
+    relaxed = edge("relax", "relaxed_structure")
+    for label in succeeded - {"relax"}:
+        assert edge(label, "initial_structure") == relaxed, label
+    if job_id in runs:
+        parent = runs[job_id]
+        standardized = next(edge.entry_id for edge in parent.outputs if edge.label == "standardized_structure")
+        assert edge("relax", "initial_structure") == standardized
+
+
 def _relaxes_cell(run: dict[str, Any]) -> bool:
     """Whether one fake VASP run was a relaxation of the cell."""
 
@@ -437,7 +496,8 @@ def test_full_characterization(tmp_path: Path, case: str, test_profile: TestProf
 
     # The parent yields its standardized structure and links to its children's runs; each succeeded
     # child is collected under its own package.
-    collected = {item.record.job_id: item for item in collect(workspace, fail_fast=True, allow_job_collector=True)}
+    items = list(collect(workspace, jobs=[job_id], fail_fast=True, allow_job_collector=True))
+    collected = {item.record.job_id: item for item in items}
     if dielectric_failed:
         # A failed job is not collected, the parent included; its succeeded children are.
         assert job_id not in collected and children["dielectric"][1]["id"] not in collected
@@ -449,4 +509,5 @@ def test_full_characterization(tmp_path: Path, case: str, test_profile: TestProf
         declaration = json.loads((package / "declaration.json").read_text(encoding="utf-8"))
         outputs = collected[children[label][1]["id"]].outputs
         assert set(outputs) == {output["name"] for output in declaration["outputs"]}, label
+    _check_collected(workspace, items, job_id, children, succeeded)
     _check_postprocess(workspace, job_id, children, succeeded, case)

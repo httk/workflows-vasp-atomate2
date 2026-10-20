@@ -182,7 +182,10 @@ def test_package_runs_and_collects(tmp_path: Path, directory: str, test_profile:
     assert titels and all("FAKE-test-fixture-not-a-real-POTCAR" in titel for titel in titels)
 
     collected = list(collect(workspace, fail_fast=True, allow_job_collector=True))
-    (item,) = [item for item in collected if item.outputs]
+    (item,) = [item for item in collected if item.record.job_id == job_id]
+    # The structure staged as a POSCAR is the run's input; the jobflow child jobs yield at most their task documents.
+    assert "initial_structure" in {edge.label for edge in item.run.inputs} and not item.products_unlinked
+    assert all(set(other.outputs) <= {"task_document"} for other in collected if other is not item)
     outputs = item.outputs
     assert isinstance(outputs["total_energy"], DataRecord)
     assert outputs["total_energy"].value == pytest.approx(-40.0, abs=0.1)
@@ -264,7 +267,8 @@ def test_static_runs_on_real_vasp(tmp_path: Path) -> None:
         pytest.skip("set HTTK_TEST_VASP_COMMAND and HTTK_TEST_PMG_VASP_PSP_DIR to run atomate2.static on real VASP")
     workspace, job_id = _run(tmp_path, "atomate2-static", command, psp_dir, timeout=7200.0)
     assert resolve_job(workspace, job_id).state == "succeeded", _failure(workspace, job_id)
-    (item,) = [item for item in collect(workspace, fail_fast=True, allow_job_collector=True) if item.outputs]
+    collected = collect(workspace, fail_fast=True, allow_job_collector=True)
+    (item,) = [item for item in collected if item.record.job_id == job_id]
     assert {"total_energy", "task_document"} <= set(item.outputs)
 
 
@@ -296,7 +300,10 @@ def test_physics_package_runs_and_collects(tmp_path: Path, directory: str, test_
     assert len(invocations) == runs
 
     collected = list(collect(workspace, fail_fast=True, allow_job_collector=True))
-    (item,) = [item for item in collected if item.outputs]
+    (item,) = [item for item in collected if item.record.job_id == job_id]
+    # The structure staged as a POSCAR is the run's input; the jobflow child jobs yield at most their task documents.
+    assert "initial_structure" in {edge.label for edge in item.run.inputs} and not item.products_unlinked
+    assert all(set(other.outputs) <= {"task_document"} for other in collected if other is not item)
     declaration = json.loads((REPO_ROOT / directory / "declaration.json").read_text(encoding="utf-8"))
     assert set(item.outputs) == {output["name"] for output in declaration["outputs"]}
     assert not item.unfulfilled
