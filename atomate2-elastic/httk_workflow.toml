@@ -105,7 +105,9 @@ file = "collect.py"
 [workflow.postprocess.report]
 file = "scripts/report"
 description = "writes report.txt and report.json (elastic and compliance tensors, Voigt/Reuss/Hill moduli, Young's modulus, Poisson ratio, anisotropy, stability)"
+outputs = ["report.*"]
 
 [workflow.postprocess.plots]
 file = "scripts/plots"
 description = "elastic_tensor.png (C_ij heatmap), youngs_modulus.png (directional, xy/xz/yz planes), stress_strain.png (the fit's data)"
+outputs = ["*.png", "*.json"]

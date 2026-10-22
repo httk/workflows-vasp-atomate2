@@ -115,6 +115,12 @@ def _postprocess(tmp_path: Path, package: str, document: dict, script: str) -> t
     return result.output_dir, result.stdout
 
 
+def _written(output: Path) -> set[str]:
+    """The names a postprocess script wrote into *output*, without httk's dot-named receipt."""
+
+    return {path.name for path in output.iterdir() if not path.name.startswith(".")}
+
+
 def _report_dir(tmp_path: Path) -> Path:
     """The ``report`` output directory of the job ``_record`` makes in *tmp_path*."""
 
@@ -241,7 +247,7 @@ def test_phonon_hook_converts_to_the_phonon_cell(tmp_path: Path, phonon_document
         assert report["lowest_frequency_THz"] == frequency and report["imaginary_tolerance_THz"] == 0.05
         assert report["dynamically_stable"] is stable, frequency
     plots, _ = _postprocess(tmp_path / "plots", "atomate2-phonons", phonon_document, "plots")
-    assert {path.name for path in plots.iterdir()} == {
+    assert _written(plots) == {
         "phonon_band_structure.png",
         "phonon_dos.png",
         "phonon_band_structure_dos.png",
@@ -286,7 +292,7 @@ def test_elastic_hook_keeps_only_the_tensors_of_an_unstable_fit(tmp_path: Path) 
     assert report["max_abs_equilibrium_stress_GPa"] is None  # the document carries no equilibrium stress
     assert "residual stress" in (_report_dir(tmp_path) / "report.txt").read_text(encoding="utf-8")
     plots, stdout = _postprocess(tmp_path / "plots", "atomate2-elastic", _elastic_document(unstable), "plots")
-    assert {path.name for path in plots.iterdir()} == {
+    assert _written(plots) == {
         "elastic_tensor.png",
         "youngs_modulus.png",
         "youngs_modulus.json",

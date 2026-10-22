@@ -386,6 +386,8 @@ lack is skipped with a line saying so. A script exits 1, with a message, when
 the flow output is missing or unreadable. The jobflow child jobs, which a
 command without job selectors also visits, exit 0 silently without output.
 
+The scripts declare their `outputs`, so the files are collectable with `httk collect WS --postprocess NAME --into STORE`.
+
 | Package | `report` | `plots` |
 | --- | --- | --- |
 | `atomate2.static` | energy (total and per atom), band gap, VBM/CBM, Fermi level, total magnetization, space group and lattice | `dos.png` (+ `dos.json`, its energy zero): total and element-projected DOS from the run's `vasprun.xml` |

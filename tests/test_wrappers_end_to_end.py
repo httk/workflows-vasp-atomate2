@@ -132,9 +132,9 @@ def _report(directory: str, record: JobRecord) -> dict[str, Any]:
 
 
 def _plots(directory: str, record: JobRecord) -> set[str]:
-    """Run the ``plots`` script and return the names of the files it wrote."""
+    """Run the ``plots`` script and return the names of the files it wrote (not httk's dot-named receipt)."""
 
-    return {path.name for path in _postprocess(directory, record, "plots").iterdir()}
+    return {path.name for path in _postprocess(directory, record, "plots").iterdir() if not path.name.startswith(".")}
 
 
 def _plot_data(record: JobRecord, name: str) -> dict[str, Any]:
@@ -152,7 +152,8 @@ def _check_child_postprocess(directory: str, records: list[JobRecord]) -> None:
     for script in ("report", "plots"):
         result = run_postprocess_script(package, script, child)
         assert (result.returncode, result.stdout, result.stderr) == (0, "", ""), script
-        assert not list(result.output_dir.iterdir()), script
+        # Only httk's dot-named postprocess receipt is there.
+        assert not [path for path in result.output_dir.iterdir() if not path.name.startswith(".")], script
 
 
 @pytest.mark.parametrize("directory", tuple(_RUNS))

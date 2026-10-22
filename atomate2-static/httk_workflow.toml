@@ -41,7 +41,9 @@ file = "collect.py"
 [workflow.postprocess.report]
 file = "scripts/report"
 description = "writes report.txt and report.json (energy, band gap, band edges, Fermi level, magnetization)"
+outputs = ["report.*"]
 
 [workflow.postprocess.plots]
 file = "scripts/plots"
 description = "dos.png: total and element-projected density of states from the run's vasprun.xml"
+outputs = ["*.png", "*.json"]
