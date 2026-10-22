@@ -23,7 +23,7 @@ from httk.atomistic import UnitcellStructureView
 from httk.core import FileRecord, Run
 from httk.workflow import Workspace, collect, job_records, store_collected
 from httk.workflow.collecting import CollectedJob, JobRecord
-from httk.workflow.introspection import resolve_job
+from httk.workflow.introspection import iter_jobs, resolve_job
 from httk.workflow.packages import load_workflow_package
 from httk.workflow.postprocessing import run_postprocess_script
 from pymatgen.core import Lattice, Structure
@@ -88,9 +88,10 @@ def _jobs(workspace: Workspace) -> dict[str, tuple[Path, dict[str, Any]]]:
     """Every job of the workspace: job id -> (job directory, job.json)."""
 
     jobs = {}
-    for path in workspace.root.glob("jobs/*/*/job.json"):
-        document = json.loads(path.read_text(encoding="utf-8"))
-        jobs[document["id"]] = (path.parent, document)
+    # Spawned children nest under <parent placement>/<parent key>.children, so list jobs, not a fixed depth.
+    for ref in iter_jobs(workspace):
+        document = json.loads((ref.path / "job.json").read_text(encoding="utf-8"))
+        jobs[document["id"]] = (ref.path, document)
     return jobs
 
 
@@ -265,10 +266,7 @@ def _check_collected(
         assert not item.products_unlinked, (label, item.products_unlinked)
         assert "initial_structure" in {edge.label for edge in item.run.inputs}, label
     # The jobflow sub-jobs that ran VASP are those holding a fake VASP invocation log.
-    vasp = {
-        log.relative_to(workspace.root).parts[2]
-        for log in workspace.root.glob("jobs/*/*/run/**/fake-vasp-invocations.jsonl")
-    }
+    vasp = {ref.path.name for ref in iter_jobs(workspace) if any(ref.path.glob("run/**/fake-vasp-invocations.jsonl"))}
     subjobs = [item for item in items if item.record.parameter("jobflow_child_job", None) is not None]
     assert {item.record.payload.name in vasp for item in subjobs} == {True, False}
     for item in subjobs:
@@ -404,10 +402,10 @@ def test_full_characterization(tmp_path: Path, case: str, test_profile: TestProf
     # Each fake VASP run, attributed to the child whose flow's job ran it.
     label_of = {document["id"]: label for label, (_path, document) in children.items()}
     runs: dict[str, list[dict[str, Any]]] = {label: [] for label in children}
-    for log in workspace.root.glob("jobs/*/*/run/**/fake-vasp-invocations.jsonl"):
-        directory = log.relative_to(workspace.root).parts[:3]
-        document = json.loads(workspace.root.joinpath(*directory, "job.json").read_text(encoding="utf-8"))
-        runs[label_of[document["parent"]["job_id"]]] += [json.loads(line) for line in log.read_text().splitlines()]
+    for ref in iter_jobs(workspace):
+        for log in ref.path.glob("run/**/fake-vasp-invocations.jsonl"):
+            document = json.loads((ref.path / "job.json").read_text(encoding="utf-8"))
+            runs[label_of[document["parent"]["job_id"]]] += [json.loads(line) for line in log.read_text().splitlines()]
     # One double relaxation, with TightRelaxMaker's INCAR; no other child relaxes the cell.
     assert len(runs["relax"]) == 2
     for run in runs["relax"]:
