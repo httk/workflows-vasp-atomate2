@@ -4,6 +4,7 @@ description = "characterize one material with the other atomate2 packages as chi
 declaration_uri = "https://raw.githubusercontent.com/httk/workflows-vasp-atomate2/refs/tags/wf-decl-v0.2.0/atomate2-full-characterization/declaration.json"
 declaration_file = "declaration.json"
 requires = ["httk-workflow>=2.1.1", "atomate2>=0.1.5", "phonopy>=2.20", "seekpath>=2.0"]
+settings = ["atomate2.symprec", "pymatgen.psp_dir"]
 
 # No maxtime: a parent's maxtime would cap every child's.
 [workflow.runner]

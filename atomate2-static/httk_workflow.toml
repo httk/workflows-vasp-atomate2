@@ -4,6 +4,7 @@ description = "atomate2's StaticMaker: one VASP single-point calculation of a st
 declaration_uri = "https://raw.githubusercontent.com/httk/workflows-vasp-atomate2/refs/tags/wf-decl-v0.1.0/atomate2-static/declaration.json"
 declaration_file = "declaration.json"
 requires = ["httk-workflow>=2.1.1", "atomate2>=0.1.5"]
+settings = ["atomate2.symprec"]
 
 [workflow.runner]
 format = "jobflow"

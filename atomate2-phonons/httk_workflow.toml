@@ -4,6 +4,7 @@ description = "atomate2's PhononMaker: a VASP relaxation, then static calculatio
 declaration_uri = "https://raw.githubusercontent.com/httk/workflows-vasp-atomate2/refs/tags/wf-decl-v0.1.0/atomate2-phonons/declaration.json"
 declaration_file = "declaration.json"
 requires = ["httk-workflow>=2.1.1", "atomate2>=0.1.5", "phonopy>=2.20", "seekpath>=2.0"]
+settings = ["atomate2.symprec"]
 
 [workflow.runner]
 format = "jobflow"
