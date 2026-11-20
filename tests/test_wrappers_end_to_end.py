@@ -172,11 +172,13 @@ def test_package_runs_and_collects(tmp_path: Path, directory: str, test_profile:
         argv = shlex.split(item["env"]["ATOMATE2_VASP_CMD"])
         assert argv[1:] == _WRAPPER if wrapped else argv == [FAKE_VASP]
     if wrapped:
-        # The wrapper ran once per VASP launch, in the run directory, and recorded its parallelization decision.
+        # The wrapper ran once per VASP launch, in the run directory, and recorded one parallelization decision
+        # per launch (followed by its NBANDS decision and any warnings).
         for log in logs:
-            launches = (log.parent / "httk-vasp-launch.log").read_text(encoding="utf-8").splitlines()
+            lines = (log.parent / "httk-vasp-launch.log").read_text(encoding="utf-8").splitlines()
+            launches = [line for line in lines if " parallel: " in line]
             assert len(launches) == len(log.read_text(encoding="utf-8").splitlines())
-            assert all(" parallel: " in line for line in launches)
+            assert lines[0] == launches[0]
     assert {item["env"]["PMG_VASP_PSP_DIR"] for item in invocations} == {FAKE_PSP}
     # The POTCARs atomate2 wrote came from the fake library, not from a real one.
     titels = [titel for item in invocations for titel in item["potcar_titels"]]
