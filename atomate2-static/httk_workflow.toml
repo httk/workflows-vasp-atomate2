@@ -48,3 +48,8 @@ outputs = ["report.*"]
 file = "scripts/plots"
 description = "dos.png: total and element-projected density of states from the run's vasprun.xml"
 outputs = ["*.png", "*.json"]
+
+[workflow.retry_policy]
+# Restart a step whose manager was lost (e.g. drained at the end of an allocation).
+retry_on = ["owner_lost"]
+maximum_attempts_per_activation = 3

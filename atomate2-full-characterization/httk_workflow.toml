@@ -58,3 +58,8 @@ outputs = ["*/*"]
 file = "scripts/latex"
 description = "a LaTeX report of the whole characterization (tables, figures, settings, execution) in report.tex, compiled to report.pdf when latexmk is on the PATH"
 outputs = ["report.tex", "*.pdf", "*/*.png"]
+
+[workflow.retry_policy]
+# Restart a step whose manager was lost (e.g. drained at the end of an allocation).
+retry_on = ["owner_lost"]
+maximum_attempts_per_activation = 3

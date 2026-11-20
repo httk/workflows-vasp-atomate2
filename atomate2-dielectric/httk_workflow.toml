@@ -76,3 +76,8 @@ outputs = ["report.*"]
 file = "scripts/plots"
 description = "dielectric.png (electronic and ionic permittivity per principal direction), born_charges.png (per-site diagonal and trace/3)"
 outputs = ["*.png", "*.json"]
+
+[workflow.retry_policy]
+# Restart a step whose manager was lost (e.g. drained at the end of an allocation).
+retry_on = ["owner_lost"]
+maximum_attempts_per_activation = 3

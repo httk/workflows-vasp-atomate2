@@ -55,3 +55,8 @@ outputs = ["report.*", "*.cif", "*.POSCAR"]
 file = "scripts/plots"
 description = "relaxation.png: energy per atom and maximum force per ionic step of the calculation(s) in the task document"
 outputs = ["*.png", "*.json"]
+
+[workflow.retry_policy]
+# Restart a step whose manager was lost (e.g. drained at the end of an allocation).
+retry_on = ["owner_lost"]
+maximum_attempts_per_activation = 3

@@ -112,3 +112,8 @@ outputs = ["report.*"]
 file = "scripts/plots"
 description = "elastic_tensor.png (C_ij heatmap), youngs_modulus.png (directional, xy/xz/yz planes), stress_strain.png (the fit's data)"
 outputs = ["*.png", "*.json"]
+
+[workflow.retry_policy]
+# Restart a step whose manager was lost (e.g. drained at the end of an allocation).
+retry_on = ["owner_lost"]
+maximum_attempts_per_activation = 3
