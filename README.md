@@ -89,7 +89,7 @@ above 1200 atoms, which its default 20 Å `min_length` exceeds for a small cell:
 diamond needs about 10 Å, a 216-atom supercell.
 
 ```console
-httk job new --install --workflow atomate2.full-characterization --input-from structure diamond.cif \
+httk job new --install atomate2.full-characterization --input-from structure diamond.cif \
     --parameter 'child_parameters={"phonons": {"min_length": 10}}'
 ```
 
@@ -141,7 +141,7 @@ parameters as the children do (for example `atomate2.bandgap_tol` and
 `maxtime`, which would cap every child's.
 
 ```console
-httk job new --install --workflow atomate2.full-characterization --input-from structure Si.cif
+httk job new --install atomate2.full-characterization --input-from structure Si.cif
 ```
 
 The structure is staged as the job's POSCAR. `--input-from` reads any structure
@@ -156,8 +156,8 @@ runs by label.
 
 ```console
 httk plugin install 'git+https://github.com/httk/workflows-vasp-atomate2'
-httk job new --install --workflow atomate2.double-relax --input structure=Si.cif
-httk workflow run
+httk job new --install atomate2.double-relax --input structure=Si.cif
+httk run
 httk collect
 ```
 
@@ -170,7 +170,7 @@ httk workflow install --workspace main 'git+https://github.com/httk/workflows-va
 
 This installs every package of the tag into the workspace, with calls between
 them bound to the same commit, so a daemon-run workspace can run any of them
-(`httk job new --workspace main --workflow atomate2.full-characterization
+(`httk job new --workspace main atomate2.full-characterization
 --input-from structure Si.cif`). A running daemon needs no reload.
 
 ## Install with pip
@@ -217,8 +217,8 @@ The same keys given as job parameters (for example `vasp.command`) override
 the workspace settings for that job, and reach every child job of its flow.
 
 ```console
-httk workspace settings set --key vasp.command --value vasp_std default
-httk workspace settings set --key pymatgen.psp_dir --value /path/to/potcars default
+httk workspace set -w default vasp.command=vasp_std
+httk workspace set -w default pymatgen.psp_dir=/path/to/potcars
 ```
 
 This mapping needs the *httk-workflow* release that contains it (after 2.1.1).
@@ -374,8 +374,8 @@ Every package declares the same two postprocess scripts, so one command covers
 a workspace of atomate2 jobs:
 
 ```console
-httk workflow postprocess --script report
-httk workflow postprocess --script plots JOB
+httk postprocess report
+httk postprocess plots JOB
 ```
 
 `report` writes `report.json` (plain JSON numbers, units in the key names) and
@@ -421,7 +421,7 @@ listed, not fatal.
 of the whole characterization:
 
 ```console
-httk workflow postprocess --script latex JOB
+httk postprocess latex JOB
 ```
 
 It runs `report` and `plots` into `analysis/`, copies the figures it shows into
