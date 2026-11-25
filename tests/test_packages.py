@@ -56,6 +56,8 @@ def test_package_is_a_jobflow_package_of_its_maker(directory: str) -> None:
 @pytest.mark.parametrize("directory", _DIRECTORIES)
 def test_package_maker_imports(directory: str) -> None:
     pytest.importorskip("atomate2")
+    if directory == "atomate2-phonons":  # atomate2 imports phonopy for its phonon jobs
+        pytest.importorskip("phonopy")
     module, _, name = _MAKERS[directory][1].partition(":")
     assert isinstance(getattr(importlib.import_module(module), name), type)
 
